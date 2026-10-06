@@ -25,6 +25,13 @@ Der vollstaendige Integrationstest endete mit Exitcode 0. Oeffentliche
 Artefakte: `tests/results/export-run-8rlccb/report.json`. Private Testschluessel
 und TLSNotary-Secrets wurden nicht in diesen Export kopiert.
 
+Die fuer GitHub vorbereitete Quellversion wurde anschliessend als Git-Archiv
+in ein frisches natives Linux-Verzeichnis entpackt. `setup.sh`, Job- und
+Peer-Sicherheitspruefungen sowie der vollstaendige Live-Integrationstest
+bestanden erneut mit Exitcode 0 (Lauf `run-JGgQAy`). Dieser Test nutzte bereits
+vorhandene Node-/Rust-Laufzeiten; die automatische Erstinstallation fehlender
+Laufzeiten wurde dabei nicht erneut ausgefuehrt.
+
 Die elf Peer-Pruefungen umfassen zugelassene Verbindung, Ablehnung unbekannter
 Identitaeten und signierter Adressumleitung, uebergrosse Nachrichten, falsche
 Sitzungstoken, parallele Reservierung, doppelte Kanaele, autorisierte Freigabe,
