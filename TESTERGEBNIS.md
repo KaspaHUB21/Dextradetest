@@ -1,5 +1,34 @@
 # Haertung und erfolgreiche Tests
 
+## Erweiterung: offene Peer-Suche
+
+Die neue Discovery-Schicht wurde am 6. Oktober 2026 separat geprueft:
+
+- Drei Linux-Nodes finden sich transitive ueber A als einzigen bekannten
+  Bootstrap. A braucht keine vorherigen Eintraege fuer B und C; B und C
+  finden und authentifizieren einander automatisch.
+- Entdeckte Teilnehmer werden nicht als vertrauenswuerdige Notare aufgenommen.
+  Unberechtigte Reservierungen, Kanaele und Zeugenwahl werden abgewiesen.
+- Gueltig signierte Bootstrap-Adressumleitung und private Zieladressen werden
+  abgewiesen. Bestehende Pins und Teilnehmeradressen bleiben erhalten.
+- Adresspolitik: 46 verbotene und 15 erlaubte IP-Faelle bestanden. Gemischte
+  DNS-Antworten, Ergebnisgrenzen und acht parallele DNS-Abfragen wurden geprueft;
+  ein Anwendungstimeout hebt das DNS-Limit nicht auf.
+- Alle elf bisherigen Peer-Sicherheitspruefungen und die Job-Policy bestanden.
+- Mit eingeschalteter `local-test`-Discovery bestanden zwei echte KuCoin-
+  TLSNotary-Abfragen, Rollenwechsel, Neustart, Offline-Pruefung,
+  Manipulationsabwehr, Job-Bindung, Replay-Abwehr und Ablaufpruefung.
+
+Discovery-Lauf: `discovery-PDF8nf`; Peer-Lauf: `peer-security-R290uj`;
+API-Lauf: `run-sB59MF`, alle erfolgreich. Die Exitcodes und Ergebnisse wurden
+aus den Testausgaben geprueft; die Laufdateien entstanden im temporaeren
+nativen Linux-Verzeichnis und wurden nicht ins Repository uebernommen.
+Die API-Verbindung war echt; die Peer-Suche wurde auf Loopback getestet.
+Ein oeffentlicher Bootstrap-Server und Internet-Verbindungen zwischen
+verschiedenen Rechnern sind noch nicht eingerichtet bzw. getestet.
+
+## Vorherige Haertung
+
 Am 6. Oktober 2026 unter Ubuntu 24.04 in WSL getestet. Drei zusaetzliche
 Agenten bearbeiteten Peer-Schutz, Job-Sicherheit und Linux/Rust-Betrieb.
 Anschliessend wurden der fertige Build und die Tests gemeinsam geprueft.

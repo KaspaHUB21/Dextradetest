@@ -25,6 +25,43 @@ Ausfall des bestimmten Zeugen wird kein Ersatz neu ausgewaehlt.
 
 ## Betriebsgrenzen
 
+### Discovery ist keine Zeugen-Zulassung
+
+`closed` ist der Standard fuer einen vorab zugelassenen Teilnehmerkreis.
+`public` ermoeglicht Discovery neuer Peers ueber global routbare IP-Adressen;
+`local-test` dient ausschliesslich numerischen Loopback-Adressen. Einen
+bekannten Bootstrap mit authentisch bezogener 64-Hex-Node-ID konfigurieren.
+Bootstrap-Pins werden mit `add-bootstrap` verwaltet und sind von den
+TLSNotary-Zulassungen durch `add-seed` getrennt.
+
+Im offenen Modus sind Discovery-Hellos neuer Teilnehmer moeglich. Deren
+Zertifikatsidentitaet muss zur signierten Beschreibung passen. Die
+Operationen `reserve`, `channel` und `release` bleiben Seeds mit exakter
+konfigurierter ID/Adresse vorbehalten. API-Jobs verwenden weiterhin nur
+zugelassene Seeds; Discovery allein begruendet kein Notarvertrauen.
+
+Fuer oeffentliche Discovery prueft die Node aufgeloeste Ziel-IP-Adressen
+vor dem Verbindungsaufbau und verbindet sich mit der geprueften IP, statt
+beim Dial erneut unkontrolliert DNS aufzulosen. Private, reservierte und
+Loopback-Ziele sind dort ausgeschlossen. Diese Regeln ersetzen keine
+Firewall oder Egress-Policy fuer einen oeffentlichen Linux-Host.
+
+Die Peer-Liste ist auf 64 Teilnehmer, darunter maximal 32 nicht vorab konfigurierte
+Peers, begrenzt. Maximal acht Discovery-Bootstraps und begrenzte
+Wiederverbindungen schuetzen Ressourcen, garantieren aber keine
+Verfuegbarkeit bei boesartigen Teilnehmern. Sybil-/Eclipse-Angriffe und
+Kollusion werden durch Discovery oder signierte Beschreibungen nicht
+grundsaetzlich geloest. Einen Bootstrap als Einstiegspunkt zu nutzen ist
+keine Garantie fuer vollstaendige oder neutrale Peer-Informationen.
+
+Das Repository bleibt privat; es gibt keinen bereitgestellten
+oeffentlichen Bootstrap-Dienst. Fuer Internetbetrieb braucht jede
+erreichbare Node eine routbare beworbene Adresse und zugaenglichen Port.
+NAT-Traversal, automatische Portweiterleitung und Relays fehlen. Nach
+Aenderung des Discovery-Modus oder der Bootstrap-Konfiguration neu starten.
+
+### Prozess und Daten
+
 - Nur den Peer-Port oeffentlich erreichbar machen. Die drei Rust-Ports
   bleiben auf Loopback. Kein direkter Notardienst fuer unbekannte Clients.
 - Privaten Node-/Notarschluessel und TLS-Schluessel nur im privaten

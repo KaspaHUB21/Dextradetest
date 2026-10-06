@@ -9,6 +9,9 @@ import { API } from '../jobs.mjs';
 const exec = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(ROOT, 'oracle-node.mjs');
+const ENGINE = resolve(process.env.ORACLE_ENGINE_DIR || join(ROOT, 'bin'));
+const discovery = process.env.ORACLE_TEST_DISCOVERY || 'closed';
+assert.ok(['closed', 'local-test'].includes(discovery), 'Integration requires closed or loopback local-test discovery');
 mkdirSync(join(ROOT, 'tests/results'), { recursive: true });
 const resultsRoot = resolve(process.env.ORACLE_TEST_RESULTS || join(ROOT, 'tests/results'));
 mkdirSync(resultsRoot, { recursive: true, mode: 0o700 });
@@ -44,10 +47,10 @@ async function waitForPeer(data, id) {
   }
   throw new Error('Peer not discovered');
 }
-const report = { testStartedAt: new Date().toISOString(), checks: [], results: [] };
+const report = { testStartedAt: new Date().toISOString(), discovery, checks: [], results: [] };
 try {
-  const a = JSON.parse(await cli('init', '--data', A, '--address', '127.0.0.1:19443', '--notary-port', '19047'));
-  const b = JSON.parse(await cli('init', '--data', B, '--address', '127.0.0.1:20443', '--notary-port', '20047'));
+  const a = JSON.parse(await cli('init', '--data', A, '--address', '127.0.0.1:19443', '--notary-port', '19047', '--discovery', discovery));
+  const b = JSON.parse(await cli('init', '--data', B, '--address', '127.0.0.1:20443', '--notary-port', '20047', '--discovery', discovery));
   assert.notEqual(a.id, b.id);
   await cli('add-seed', '--data', A, '--address', b.address, '--id', b.id);
   await cli('add-seed', '--data', B, '--address', a.address, '--id', a.id);
@@ -104,7 +107,7 @@ try {
     const offset = pos + Buffer.byteLength('"price":"');
     changed[offset] = changed[offset] === 57 ? 56 : 57;
     const changedFile = join(result.job, 'tampered.presentation.tlsn'); writeFileSync(changedFile, changed);
-    await assert.rejects(exec(join(ROOT, 'bin/verify'), [], { env: { ...process.env, OUTPUT_DIR: result.job, TRUSTED_NOTARY_KEY: join(result.job, 'notary.pub'), PRESENTATION_FILE: changedFile } }), /hash opening does not match any commitment/);
+    await assert.rejects(exec(join(ENGINE, 'verify'), [], { env: { ...process.env, OUTPUT_DIR: result.job, TRUSTED_NOTARY_KEY: join(result.job, 'notary.pub'), PRESENTATION_FILE: changedFile } }), /hash opening does not match any commitment/);
   }
   report.checks.push('Both saved proofs verified with both nodes stopped');
   report.checks.push('Both rounds rejected wrong node identity, wrong peer identity, changed receipt, and changed price inside TLSNotary proof');

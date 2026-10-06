@@ -11,9 +11,15 @@ oder TLSNotary-Zeuge arbeiten. Keine Kaspa-Anbindung in diesem Prototyp.
   der SHA-256-Fingerabdruck des oeffentlichen Identitaetsschluessels geprueft.
 - Signierte Peer-Beschreibungen binden Node-ID, Adresse und den separaten
   secp256k1-Notarschluessel aneinander.
-- Bootstrap ueber bekannte Seed-Adresse **und vorab authentisch erhaltene
-  Node-ID**. Peer-Austausch akzeptiert nur vorab zugelassene IDs und Adressen.
-  Die Node prueft Erreichbarkeit regelmaessig und verbindet sich erneut.
+- Drei Discovery-Modi: `closed` als Standard fuer vorab zugelassene Peers,
+  `public` fuer signierte Teilnehmerbeschreibungen ueber oeffentlich
+  routbare Adressen und `local-test` fuer numerische Loopback-Adressen.
+  Ein bekannter Bootstrap mit authentisch erhaltener Node-ID vermittelt
+  weitere erreichbare Peers. Die Node prueft Verbindungen und verbindet
+  sich mit begrenzter Parallelitaet erneut.
+- Discovery-Bootstraps und zugelassene Zeugen sind getrennt: `add-bootstrap`
+  erlaubt Peer-Suche, `add-seed` erlaubt Zusammenarbeit bei TLSNotary-Jobs.
+  Ein entdeckter Peer wird dadurch nicht automatisch zum Zeugen.
 - API-Jobs nutzen einen explizit als Seed vertrauten Peer. Der Job-Hash bestimmt
   ihn aus der sortierten Seed-Liste; ist er nicht erreichbar, scheitert der Job.
   Es wird nicht erneut gewuerfelt. Die zugelassene Liste muss verbindlich sein.
@@ -209,25 +215,111 @@ Adresse und einen Listen-Socket angeben:
 
 ```bash
 node oracle-node.mjs init --data ./node-data \
-  --address oracle.example.org:9443 --listen 0.0.0.0:9443
+  --address oracle.example.org:9443 --listen 0.0.0.0:9443 --discovery public
+node oracle-node.mjs add-bootstrap --data ./node-data \
+  --address bootstrap.example.org:9443 --id NODE_ID_DES_BOOTSTRAPS
+node oracle-node.mjs start --data ./node-data
 ```
 
-Das ist ein Platzhalter, kein existierender Bootstrap-Dienst. Der Peer-Port
+Das sind Platzhalter, keine existierenden Bootstrap-Dienste. Die ID ist der
+64-stellige kleingeschriebene Hex-Fingerabdruck der Node-Identitaet und muss
+authentisch erhalten werden. Bootstrap-Betreiber starten dieselbe Software
+mit `--discovery public`, einer oeffentlich routbaren Adresse und einem
+erreichbaren Listen-Port. Der Peer-Port
 muss vom anderen Rechner erreichbar sein; NAT/Firewall/Portweiterleitung
 werden nicht automatisch konfiguriert. Die drei internen Rust-Ports bleiben
 auf Loopback und werden nicht separat ins Internet gestellt.
 
-Es gibt noch kein oeffentliches Oracle-Netz, das man automatisch finden
-koennte. Mindestens ein bekannter Seed ist erforderlich. Unterschiedliche
+Es gibt noch kein bereitgestelltes oeffentliches Oracle-Netz oder einen
+mitgelieferten aktiven Bootstrap-Dienst. Mindestens ein bekannter lebender,
+erreichbarer Bootstrap ist fuer die erste Peer-Suche erforderlich. Weitere
+Peers werden durch signierte Beschreibungen bekannt; damit kann das Netz
+nach dem Einstieg weitere Verbindungen aufbauen. Unterschiedliche
 Betreiber, oeffentliche Internet-Peer-Verbindungen und NAT-Verhalten wurden
 mit diesem lokalen Test noch nicht bestaetigt.
+
+`public` nimmt neue Discovery-Verbindungen an, nachdem Zertifikatsidentitaet
+und signierte Peer-Beschreibung geprueft wurden. Vor einem ausgehenden Dial
+werden DNS-Ergebnisse auf global routbare IP-Adressen geprueft und die
+gepruefte IP fuer genau diese Verbindung verwendet. Private, lokale und
+reservierte Ziele werden dabei ausgeschlossen. Dies verhindert, dass ein
+neu entdeckter Peer die Node zu internen Diensten umleitet. `local-test`
+erlaubt fuer Discovery ausschliesslich numerische Loopback-Adressen.
+
+Ein Discovery-Bootstrap erhaelt keine automatische Berechtigung fuer
+Notarjobs. `reserve`, `channel` und `release` bleiben zugelassenen Seeds mit
+passender ID und exakt konfigurierter Adresse vorbehalten. Fuer eine echte
+TLSNotary-Abfrage muessen beide beteiligten Nodes die jeweils andere mit
+`add-seed` zulassen. Eine oeffentliche Peer-Liste ist keine Vertrauensliste.
+
+Die Peer-Liste ist auf 64 Teilnehmer, davon hoechstens 32 nicht vorab konfigurierte,
+begrenzt; maximal acht Discovery-Bootstraps sind konfigurierbar. Erreichbarkeit
+und Wiederverbindung werden begrenzt geprueft. NAT-Traversal, Relay-Dienste
+und automatische Firewall-/Portweiterleitung gibt es nicht.
+Nicht erreichbare entdeckte Teilnehmer werden nach zwei Minuten entfernt.
+Pro Suchrunde werden hoechstens zwoelf Teilnehmer in Vierergruppen geprueft,
+und neue Gruppen nach 15 Sekunden nicht mehr begonnen. Pro Antwort werden
+hoechstens vier neue Beschreibungen aufgenommen. DNS-Abfragen sind auf acht
+gleichzeitige Betriebssystem-Abfragen begrenzt, auch wenn die Anwendung nach
+drei Sekunden aufhoert zu warten. Fehlerhafte Peers erhalten Wartezeiten bis
+zu einer Minute. Diese Grenzen bieten keinen Schutz gegen beliebig viele
+Angreifer oder gegen eine komplett manipulierte Bootstrap-Teilnehmerliste.
+
+Modus oder Einstiegspunkte aendern:
+
+```bash
+node oracle-node.mjs discovery --data ./node-data --mode closed
+node oracle-node.mjs remove-bootstrap --data ./node-data --id NODE_ID_DES_BOOTSTRAPS
+```
+
+Nach Konfigurationsaenderungen den laufenden Dienst neu starten. `closed`
+beschraenkt den Teilnehmerkreis wieder auf ausdruecklich zugelassene Peers.
+
+## Drei Nodes finden sich lokal
+
+Dieses Beispiel testet Peer-Suche und verbindet noch keine Notarjobs.
+Die Daten im privaten Linux-Dateisystem ablegen. Node A ist der gemeinsame
+Einstiegspunkt; B und C brauchen jeweils nur dessen Bootstrap-ID.
+
+```bash
+umask 077
+node oracle-node.mjs init --data ./discover-a --address 127.0.0.1:19443 \
+  --notary-port 19047 --discovery local-test
+node oracle-node.mjs init --data ./discover-b --address 127.0.0.1:20443 \
+  --notary-port 20047 --discovery local-test
+node oracle-node.mjs init --data ./discover-c --address 127.0.0.1:21443 \
+  --notary-port 21047 --discovery local-test
+node oracle-node.mjs add-bootstrap --data ./discover-b \
+  --address 127.0.0.1:19443 --id NODE_ID_A
+node oracle-node.mjs add-bootstrap --data ./discover-c \
+  --address 127.0.0.1:19443 --id NODE_ID_A
+```
+
+`NODE_ID_A` durch die bei A ausgegebene ID ersetzen. In drei Terminals starten:
+
+```bash
+node oracle-node.mjs start --data ./discover-a
+node oracle-node.mjs start --data ./discover-b
+node oracle-node.mjs start --data ./discover-c
+```
+
+Danach in einem weiteren Terminal `node oracle-node.mjs peers --data
+./discover-b` aufrufen. Nach dem Peer-Austausch kann B auch C kennenlernen
+und umgekehrt; gegenseitige Bootstrap-Pins sind dafuer nicht erforderlich.
+Fuer anschliessende API-Abfragen A und B wie im Abschnitt "Zwei Nodes
+starten" gegenseitig mit `add-seed` zulassen und neu starten. Lokale
+Discovery ist ein Netzwerktest; sie belegt keine unabhaengigen Betreiber.
 
 ## Automatischer Test
 
 ```bash
+node tests/discovery-address.mjs
+node tests/discovery-network.mjs
 node tests/job-security.mjs
 node tests/peer-security.mjs
 node tests/integration.mjs
+# API-Belege bei eingeschalteter lokaler Peer-Suche:
+ORACLE_TEST_DISCOVERY=local-test node tests/integration.mjs
 ```
 
 Der Test erzeugt zwei eigene Identitaeten, startet beide Nodes, prueft die
@@ -238,6 +330,10 @@ Node-/Peer-IDs, eine veraenderte Node-Quittung und Kursmanipulation direkt in
 der TLSNotary-Presentation. Ausserdem werden Job-Bindung, einmalige Annahme,
 Replay-Abwehr und abgelaufene echte Belege geprueft. Testports: 19443/20443 und interne Ports
 19047-19049/20047-20049. Die Ports muessen frei sein.
+Der Discovery-Test verwendet drei Nodes auf 26443/27443/28443 und internen
+Ports 26047-26049/27047-27049/28047-28049. B und C kennen nur A als Bootstrap
+und finden einander ohne gegenseitige Eintraege. Negative Tests pruefen
+fehlende Notarberechtigung, signierte Adressumleitung und private Ziele.
 
 Ergebnisse unter `tests/results/run-.../report.json`; `latest.txt` wird nur
 nach vollstaendig erfolgreichem Test geschrieben. Alle Testdienste werden

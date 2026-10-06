@@ -8,6 +8,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chmodSync, statSync, readdirSync, unlinkSync } from 'node:fs';
 import { boundedRead, jsonRead, makeJob, validateJob, jobHash, selectWitness, validateResult, consume } from './jobs.mjs';
+import { discoveryTarget, isDiscoveryAddressAllowed } from './discovery-address.mjs';
 const run = promisify(execFile);
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const BIN = process.env.ORACLE_ENGINE_DIR || join(ROOT, 'bin');
@@ -29,6 +30,12 @@ function address(value) {
 function readJson(path) { return JSON.parse(readFileSync(path, 'utf8')); }
 function writeJson(path, object) { const temp = path + '.' + randomBytes(4).toString('hex') + '.tmp'; writeFileSync(temp, JSON.stringify(object, null, 2) + '\n', { mode: 0o600 }); renameSync(temp, path); }
 function config() { return readJson(join(DATA, 'config.json')); }
+function discoveryMode(cfg) {
+  const mode = cfg.discovery || 'closed';
+  if (!['closed', 'public', 'local-test'].includes(mode)) throw new Error('Invalid discovery mode');
+  return mode;
+}
+function discoveryPins(cfg) { return [...cfg.seeds, ...(cfg.bootstraps || [])]; }
 function credentials() { return { key: readFileSync(join(DATA, 'identity.key')), cert: readFileSync(join(DATA, 'identity.crt')) }; }
 function validateDescriptor(envelope) {
   if (typeof envelope?.payload !== 'string' || envelope.payload.length > 16000 || typeof envelope.signature !== 'string') throw new Error('Invalid descriptor');
@@ -70,11 +77,15 @@ function line(socket) {
   });
 }
 async function connect(peer, request) {
-  const approved = config().seeds.find(seed => seed.id === peer.id && seed.address === peer.address);
-  if (!approved) throw new Error('Outbound peer is not explicitly approved at this address');
+  const cfg = config();
+  const approved = cfg.seeds.find(seed => seed.id === peer.id && seed.address === peer.address);
+  const pin = discoveryPins(cfg).find(seed => seed.id === peer.id);
+  if (pin && pin.address !== peer.address) throw new Error('Discovery cannot redirect pinned peer');
+  const discoveryOnly = !approved && request.op === 'hello' && discoveryMode(cfg) !== 'closed';
+  if (!approved && !discoveryOnly) throw new Error('Outbound peer is not explicitly approved at this address');
   if (outbound.size >= 32) throw new Error('Outbound connection limit');
-  const { host, port } = address(peer.address);
-  const socket = tls.connect({ host, port, ...credentials(), minVersion: 'TLSv1.3', rejectUnauthorized: false });
+  const target = discoveryOnly ? await discoveryTarget(peer.address, discoveryMode(cfg)) : address(peer.address);
+  const socket = tls.connect({ ...target, ...credentials(), minVersion: 'TLSv1.3', rejectUnauthorized: false });
   outbound.add(socket); socket.once('close', () => outbound.delete(socket));
   socket.on('error', () => {});
   const timer = setTimeout(() => socket.destroy(new Error('Connection timeout')), 10000);
@@ -99,6 +110,9 @@ async function init() {
   if (existsSync(join(DATA, 'config.json')) || existsSync(join(DATA, 'identity.key'))) throw new Error('Node already exists; identity will not be overwritten');
   const advertised = option('address', '127.0.0.1:9443'); address(advertised);
   const listen = option('listen', advertised); address(listen);
+  const discovery = discoveryMode({ discovery: option('discovery', 'closed') });
+  if (discovery !== 'closed') await discoveryTarget(advertised, discovery);
+  if (discovery === 'local-test') await discoveryTarget(listen, discovery);
   const base = Number(option('notary-port', '17047'));
   if (!Number.isInteger(base) || base < 1025 || base > 65532) throw new Error('Invalid internal port');
   mkdirSync(DATA, { recursive: true, mode: 0o700 });
@@ -112,16 +126,41 @@ async function init() {
   const descriptor = { version: 1, id, address: advertised, publicKey, notaryPublicKey: readFileSync(join(DATA, 'notary.pub'), 'utf8').trim() };
   const bytes = Buffer.from(JSON.stringify(descriptor));
   writeJson(join(DATA, 'descriptor.json'), { payload: bytes.toString('base64'), signature: sign(null, Buffer.concat([DOMAIN, bytes]), createPrivateKey(privatePem)).toString('base64') });
-  writeJson(join(DATA, 'config.json'), { version: 1, id, listen, address: advertised, notaryPort: base, seeds: [] });
+  writeJson(join(DATA, 'config.json'), { version: 1, id, listen, address: advertised, notaryPort: base, seeds: [], bootstraps: [], discovery });
   console.log(JSON.stringify({ id, address: advertised, data: DATA }));
 }
 function addSeed() {
   const cfg = config(); const peer = { address: option('address'), id: option('id') };
   address(peer.address);
   if (!/^[a-f0-9]{64}$/.test(peer.id) || peer.id === cfg.id) throw new Error('Invalid other node ID');
+  if ((cfg.bootstraps || []).some(p => p.id === peer.id && p.address !== peer.address)) throw new Error('Conflicting bootstrap address');
   if (!cfg.seeds.some(p => p.id === peer.id) && cfg.seeds.length >= 32) throw new Error('Pinned peer limit reached; remove a seed explicitly');
   cfg.seeds = [...cfg.seeds.filter(p => p.id !== peer.id), peer];
   writeJson(join(DATA, 'config.json'), cfg); console.log('Seed saved; this identity is explicitly trusted for the prototype.');
+}
+async function addBootstrap() {
+  const cfg = config(); const peer = { address: option('address'), id: option('id') };
+  if (!/^[a-f0-9]{64}$/.test(peer.id) || peer.id === cfg.id) throw new Error('Invalid bootstrap identity');
+  await discoveryTarget(peer.address, discoveryMode(cfg) === 'local-test' ? 'local-test' : 'public');
+  if (cfg.seeds.some(p => p.id === peer.id && p.address !== peer.address)) throw new Error('Conflicting trusted peer address');
+  const old = cfg.bootstraps || [];
+  if (!old.some(p => p.id === peer.id) && old.length >= 8) throw new Error('Bootstrap limit reached');
+  cfg.bootstraps = [...old.filter(p => p.id !== peer.id), peer]; writeJson(join(DATA, 'config.json'), cfg);
+  console.log('Bootstrap saved for discovery only; no witness trust granted. Restart node to apply.');
+}
+function removeBootstrap() {
+  const cfg = config(); const id = option('id');
+  if (!(cfg.bootstraps || []).some(p => p.id === id)) throw new Error('Unknown bootstrap ID');
+  cfg.bootstraps = cfg.bootstraps.filter(p => p.id !== id); writeJson(join(DATA, 'config.json'), cfg);
+  console.log('Bootstrap removed. Restart node to apply.');
+}
+async function setDiscovery() {
+  const cfg = config(); const mode = discoveryMode({ discovery: option('mode') });
+  if (!option('mode')) throw new Error('Discovery mode required');
+  if (mode !== 'closed') await discoveryTarget(cfg.address, mode);
+  if (mode === 'local-test') await discoveryTarget(cfg.listen, mode);
+  cfg.discovery = mode; writeJson(join(DATA, 'config.json'), cfg);
+  console.log('Discovery mode saved. Restart node to apply.');
 }
 function removeSeed() {
   const cfg = config(); const id = option('id');
@@ -148,8 +187,14 @@ async function renewCertificate() {
 }
 async function start() {
   const cfg = config();
+  const mode = discoveryMode(cfg);
+  checkLocalIdentity(cfg);
+  if (mode !== 'closed') await discoveryTarget(cfg.address, mode);
+  if (mode === 'local-test') await discoveryTarget(cfg.listen, mode);
   const approved = new Map(cfg.seeds.map(p => [p.id, p]));
+  const pins = new Map(discoveryPins(cfg).map(p => [p.id, p]));
   const peers = new Map(); const incoming = new Set(); const ipCounts = new Map();
+  const retries = new Map();
   const rates = new Map(); let lease; let child; let stopping = false; let releaseTask;
   let launching = false; let restartTimer; let restartAttempts = 0; let server; let timer;
   function rate(key, limit, period) {
@@ -159,12 +204,25 @@ async function start() {
     if (!entry) { if (rates.size >= 256) return false; entry = { count: 0, until: now + period }; rates.set(key, entry); }
     return ++entry.count <= limit;
   }
-  function remember(envelope, online = false) {
-    const desc = validateDescriptor(envelope); const seed = approved.get(desc.id);
-    // Discovery cannot grant trust or redirect a pinned identity to another address.
-    if (!seed || seed.address !== desc.address || desc.id === cfg.id) return;
-    peers.set(desc.id, { descriptor: envelope, ...desc, lastSeen: online ? Date.now() : (peers.get(desc.id)?.lastSeen || 0) });
+  async function remember(envelope, online = false) {
+    const desc = validateDescriptor(envelope); const pin = pins.get(desc.id);
+    if (desc.id === cfg.id || (pin && pin.address !== desc.address)) return false;
+    if (!approved.has(desc.id)) {
+      if (mode === 'closed') return false;
+      await discoveryTarget(desc.address, mode);
+    }
+    const previous = peers.get(desc.id);
+    if (previous && previous.address !== desc.address) return false;
+    if (!previous && !pin && [...peers.values()].filter(p => !pins.has(p.id)).length >= 32) return false;
+    if (!previous && peers.size >= 64) {
+      if (!pin) return false;
+      const evict = [...peers.values()].filter(p => !pins.has(p.id)).sort((a, b) => a.lastSeen - b.lastSeen)[0];
+      if (!evict) return false;
+      peers.delete(evict.id); retries.delete(evict.id);
+    }
+    peers.set(desc.id, { descriptor: envelope, ...desc, trusted: approved.has(desc.id), learnedAt: previous?.learnedAt || Date.now(), lastSeen: online ? Date.now() : (previous?.lastSeen || 0), confirmed: online || Boolean(previous?.confirmed) });
     writeJson(join(DATA, 'peers.json'), [...peers.values()]);
+    return true;
   }
   function invalidateLease() {
     const previous = lease; lease = undefined;
@@ -231,16 +289,21 @@ async function start() {
     socket.setTimeout(15000, () => socket.destroy());
     (async () => {
       const id = peerId(socket);
-      // Reject unknown identities before parsing their messages or learning descriptors.
-      if (!approved.has(id)) throw new Error('Peer identity not approved');
+      if (mode === 'local-test' && !isDiscoveryAddressAllowed(socket.remoteAddress, 'local-test')) throw new Error('Local-test accepts loopback connections only');
+      // Closed mode preserves admission before parsing; open mode admits discovery only.
+      if (!approved.has(id) && mode === 'closed') throw new Error('Peer identity not approved');
       if (!rate('peer:' + id, 90, 60000)) throw new Error('Peer request rate exceeded');
       const msg = await line(socket);
       if (!msg || typeof msg !== 'object' || Array.isArray(msg)) throw new Error('Invalid peer request');
       const desc = validateDescriptor(msg.descriptor);
-      if (desc.id !== id || desc.address !== approved.get(id).address) throw new Error('Descriptor does not match pinned peer');
-      remember(msg.descriptor, true);
+      if (desc.id !== id || (pins.has(id) && desc.address !== pins.get(id).address)) throw new Error('Descriptor does not match pinned peer');
+      if (!approved.has(id) && msg.op !== 'hello') throw new Error('Peer identity not approved for notary sessions');
+      // Inbound TLS proves possession of a key, not reachability of its advertised address.
+      if (!await remember(msg.descriptor, approved.has(id))) throw new Error('Peer discovery admission rejected');
       if (msg.op === 'hello') {
-        send(socket, { ok: true, descriptor: readJson(join(DATA, 'descriptor.json')), peers: [...peers.values()].slice(0, 32).map(p => p.descriptor) }); socket.end(); return;
+        const shared = [...peers.values()].filter(p => p.confirmed && Date.now() - p.lastSeen < 30000 && p.id !== id);
+        const offset = shared.length ? randomInt(shared.length) : 0;
+        send(socket, { ok: true, descriptor: readJson(join(DATA, 'descriptor.json')), peers: [...shared.slice(offset), ...shared.slice(0, offset)].slice(0, 32).map(p => p.descriptor) }); socket.end(); return;
       }
       if (msg.op === 'reserve') {
         if (lease || releaseTask || launching || !child || child.exitCode !== null) throw new Error('Notary busy or unavailable');
@@ -291,16 +354,45 @@ async function start() {
   const probe = async () => {
     if (probing || stopping) return; probing = true;
     try {
-      // Only explicit seed addresses are contacted. Discovery cannot trigger arbitrary outbound connections.
-      for (const peer of cfg.seeds.slice(0, 32)) {
-        if (stopping) break;
+      const began = Date.now(); let pruned = false;
+      for (const p of peers.values()) if (!pins.has(p.id) && Date.now() - (p.lastSeen || p.learnedAt) > 120000) { peers.delete(p.id); retries.delete(p.id); pruned = true; }
+      if (pruned) writeJson(join(DATA, 'peers.json'), [...peers.values()]);
+      const candidates = new Map(cfg.seeds.map(p => [p.id, p]));
+      if (mode !== 'closed') {
+        for (const p of (cfg.bootstraps || [])) candidates.set(p.id, p);
+        for (const p of peers.values()) if (!candidates.has(p.id)) candidates.set(p.id, p);
+      }
+      const discovered = [...candidates.values()].filter(p => !pins.has(p.id));
+      const offset = discovered.length ? randomInt(discovered.length) : 0;
+      const pinned = [...candidates.values()].filter(p => pins.has(p.id));
+      const pinOffset = pinned.length ? randomInt(pinned.length) : 0;
+      const batch = [...pinned.slice(pinOffset), ...pinned.slice(0, pinOffset)].slice(0, 8).concat([...discovered.slice(offset), ...discovered.slice(0, offset)].slice(0, 4));
+      // Every discovered dial resolves to a checked numeric IP; gossip never grants witness trust.
+      for (let pos = 0; pos < batch.length; pos += 4) {
+        if (Date.now() - began > 15000 || stopping) break;
+        await Promise.allSettled(batch.slice(pos, pos + 4).map(async peer => {
+        if (stopping) return;
+        const retry = retries.get(peer.id);
+        if (retry && Date.now() < retry.after) return;
         try {
           const response = await request(peer, { op: 'hello' });
           const desc = validateDescriptor(response.descriptor);
           if (desc.id !== peer.id || desc.address !== peer.address) throw new Error('Unexpected peer descriptor');
-          remember(response.descriptor, true);
-          if (Array.isArray(response.peers)) for (const discovered of response.peers.slice(0, 32)) { try { remember(discovered); } catch {} }
-        } catch { /* An unreachable or invalid peer does not stop the node. */ }
+          if (!await remember(response.descriptor, true)) throw new Error('Peer admission rejected');
+          retries.delete(peer.id);
+          if (mode !== 'closed' && Array.isArray(response.peers)) {
+            const offered = response.peers.slice(0, 32); const offerOffset = offered.length ? randomInt(offered.length) : 0;
+            for (const discovered of [...offered.slice(offerOffset), ...offered.slice(0, offerOffset)].slice(0, 4)) {
+              if (Date.now() - began > 15000 || stopping) break;
+              try { await remember(discovered); } catch {}
+            }
+          }
+        } catch {
+          const failures = Math.min(6, (retry?.failures || 0) + 1);
+          retries.set(peer.id, { failures, after: Date.now() + Math.min(60000, 1000 * 2 ** failures) });
+          if (retries.size > 72) retries.delete(retries.keys().next().value);
+        }
+        }));
       }
     } finally { probing = false; }
   };
@@ -401,7 +493,8 @@ async function verifyJob() {
 }
 async function main() {
   const flags = {
-    init: ['data', 'address', 'listen', 'notary-port'], 'add-seed': ['data', 'address', 'id'], 'remove-seed': ['data', 'id'],
+    init: ['data', 'address', 'listen', 'notary-port', 'discovery'], 'add-seed': ['data', 'address', 'id'], 'remove-seed': ['data', 'id'],
+    'add-bootstrap': ['data', 'address', 'id'], 'remove-bootstrap': ['data', 'id'], discovery: ['data', 'mode'],
     'renew-cert': ['data'], start: ['data'], peers: ['data'], fetch: ['data', 'job-spec'], verify: ['data', 'job', 'node-id', 'peer-id', 'expected-job', 'state']
   };
   const allowed = flags[command];
@@ -416,11 +509,14 @@ async function main() {
   if (command === 'init') return init();
   if (command === 'add-seed') return addSeed();
   if (command === 'remove-seed') return removeSeed();
+  if (command === 'add-bootstrap') return addBootstrap();
+  if (command === 'remove-bootstrap') return removeBootstrap();
+  if (command === 'discovery') return setDiscovery();
   if (command === 'renew-cert') return renewCertificate();
   if (command === 'start') return start();
   if (command === 'fetch') return fetchApi();
   if (command === 'verify') return verifyJob();
   if (command === 'peers') { console.log(JSON.stringify(existsSync(join(DATA, 'peers.json')) ? readJson(join(DATA, 'peers.json')) : [], null, 2)); return; }
-  throw new Error('Commands: init, add-seed, remove-seed, renew-cert, start, peers, fetch, verify; use --data DIRECTORY');
+  throw new Error('Commands: init, add-seed, remove-seed, add-bootstrap, remove-bootstrap, discovery, renew-cert, start, peers, fetch, verify; use --data DIRECTORY');
 }
 main().catch(error => { console.error(error.message); process.exitCode = 1; });
