@@ -58,8 +58,8 @@ Ein Abbruch beim Kopieren kann verschiedene Staende hinterlassen. Dann
 Installation erneut abschliessen, bevor der Dienst gestartet wird.
 
 Ein Lockfile fixiert Abhaengigkeiten, authentifiziert aber nicht den
-Herausgeber des Downloads. Es existiert noch kein oeffentliches Repository
-oder signiertes Release-Verfahren. Vor GitHub-Verteilung muessen
+Herausgeber des Downloads. Das Repository ist privat; ein signiertes
+Release-Verfahren existiert noch nicht. Vor oeffentlicher Verteilung muessen
 Release-Authentizitaet, Lizenzhinweise, reproduzierbare Build-/CI-Pruefungen
 und ein Sicherheitskontakt festgelegt werden. Kein `curl | bash` verwenden.
 Bekannten Quellstand pruefen, bauen, lokal testen und erst dann ausrollen.

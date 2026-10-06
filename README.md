@@ -37,10 +37,14 @@ oder TLSNotary-Zeuge arbeiten. Keine Kaspa-Anbindung in diesem Prototyp.
 
 ### Einfacher Start unter Ubuntu 24.04
 
-Den Repository-Ordner klonen oder das GitHub-ZIP entpacken. Bei einem privaten
-Repository ist eine Anmeldung bei GitHub erforderlich. Im Ordner ausfuehren:
+Das private Repository klonen oder nach Anmeldung bei GitHub dessen ZIP
+herunterladen und entpacken. Fuer Git ueber HTTPS einen eingerichteten
+Credential-Manager verwenden oder bei der Passwortabfrage einen GitHub-Token
+mit Repository-Leserechten eingeben. Tokens niemals in die Clone-URL schreiben.
 
 ```bash
+git clone https://github.com/KaspaHUB21/Dextradetest.git
+cd Dextradetest
 sudo apt update
 sudo apt install -y build-essential openssl ca-certificates curl xz-utils git
 bash setup.sh
@@ -76,7 +80,6 @@ OpenSSL, GCC/Build-Werkzeuge und Internet fuer die Build-Abhaengigkeiten.
 Getestet unter Ubuntu 24.04 x86_64 in WSL.
 
 ```bash
-cd 'node prototyp'
 bash install.sh
 ```
 
@@ -85,8 +88,8 @@ ab. Er installiert keinen globalen Dienst, aendert keine Firewall und braucht
 keine Administratorrechte. Die offiziellen TLSNotary-Quellen sind versioniert
 in `vendor/tlsn` enthalten; `tlsn-engine/Cargo.lock` fixiert die Abhaengigkeiten.
 
-Der Ordner ist fuer eine spaetere GitHub-Veroeffentlichung vorbereitet. Ein
-oeffentliches Repository wurde bisher **nicht erstellt oder hochgeladen**.
+Repository: https://github.com/KaspaHUB21/Dextradetest (privat).
+Ein oeffentliches Release und signierte Downloadpakete gibt es noch nicht.
 
 ### Privater Linux-Betrieb und Updates
 
