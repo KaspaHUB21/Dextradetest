@@ -1,5 +1,23 @@
 # Haertung und erfolgreiche Tests
 
+## Lokale Node zum externen Kasvio-Bootstrap
+
+Am 6. Oktober 2026 wurde eine zweite Node auf dem lokalen Rechner in WSL
+angelegt und gestartet. Sie verbindet sich ausgehend mit
+`152.53.92.135:9443`, ohne einen oeffentlichen Listener zu behaupten.
+Die lokale Peer-Liste bestaetigte die TLS-Identitaet und signierte Beschreibung
+des Bootstrap; dessen Peer-Liste bestaetigte wiederum die neue Client-ID.
+Es wurde keine zweite Node auf dem Server angelegt. Das vorhandene
+Bootstrap-Programm wurde mit Sicherung aktualisiert und sein Dienst neu
+gestartet; seine Identitaet blieb unveraendert.
+
+Der erweiterte Discovery-Test bestand mit einem zusaetzlichen Outbound-Client:
+keine private Adresse als oeffentlicher Peer, keine Aufnahme in dialbare
+Gossip-Antworten, keine unberechtigte Notarreservierung. Alle elf bisherigen
+Peer-Sicherheitspruefungen bestanden ebenfalls (Laeufe `discovery-G0nB4y`
+und `peer-security-jgnQ46`). Dieser externe Test bestaetigt die Peer-Verbindung,
+noch keinen TLSNotary-API-Job zwischen der lokalen Node und Kasvio.
+
 ## Erweiterung: offene Peer-Suche
 
 Die neue Discovery-Schicht wurde am 6. Oktober 2026 separat geprueft:

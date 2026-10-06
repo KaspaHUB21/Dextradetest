@@ -46,7 +46,12 @@ function validateDescriptor(envelope) {
   if (pub.asymmetricKeyType !== 'ed25519' || keyId(value.publicKey) !== value.id ||
       !verify(null, Buffer.concat([DOMAIN, bytes]), pub, Buffer.from(envelope.signature, 'base64'))) throw new Error('Invalid descriptor signature');
   if (!/^(02|03)[a-f0-9]{64}$/.test(value.notaryPublicKey)) throw new Error('Invalid notary key');
-  address(value.address);
+  if (value.outboundOnly === true) {
+    if (value.address !== null) throw new Error('Outbound-only peer cannot advertise an address');
+  } else {
+    if (value.outboundOnly !== undefined && value.outboundOnly !== false) throw new Error('Invalid outbound-only declaration');
+    address(value.address);
+  }
   return value;
 }
 function peerId(socket) {
@@ -108,10 +113,16 @@ async function request(peer, body) {
 }
 async function init() {
   if (existsSync(join(DATA, 'config.json')) || existsSync(join(DATA, 'identity.key'))) throw new Error('Node already exists; identity will not be overwritten');
-  const advertised = option('address', '127.0.0.1:9443'); address(advertised);
-  const listen = option('listen', advertised); address(listen);
+  const outboundFlag = option('outbound-only', 'false');
+  if (!['true', 'false'].includes(outboundFlag)) throw new Error('Outbound-only must be true or false');
+  const outboundOnly = outboundFlag === 'true';
+  if (outboundOnly && option('address')) throw new Error('Outbound-only nodes do not advertise an address');
+  const advertised = outboundOnly ? null : option('address', '127.0.0.1:9443');
+  if (advertised !== null) address(advertised);
+  const listen = option('listen', advertised || '127.0.0.1:9443'); address(listen);
   const discovery = discoveryMode({ discovery: option('discovery', 'closed') });
-  if (discovery !== 'closed') await discoveryTarget(advertised, discovery);
+  if (outboundOnly) await discoveryTarget(listen, 'local-test');
+  if (!outboundOnly && discovery !== 'closed') await discoveryTarget(advertised, discovery);
   if (discovery === 'local-test') await discoveryTarget(listen, discovery);
   const base = Number(option('notary-port', '17047'));
   if (!Number.isInteger(base) || base < 1025 || base > 65532) throw new Error('Invalid internal port');
@@ -123,10 +134,10 @@ async function init() {
   const id = keyId(privatePem);
   await run(join(BIN, 'notary'), ['init'], { cwd: DATA });
   chmodSync(join(DATA, 'notary.key'), 0o600);
-  const descriptor = { version: 1, id, address: advertised, publicKey, notaryPublicKey: readFileSync(join(DATA, 'notary.pub'), 'utf8').trim() };
+  const descriptor = { version: 1, id, address: advertised, ...(outboundOnly ? { outboundOnly: true } : {}), publicKey, notaryPublicKey: readFileSync(join(DATA, 'notary.pub'), 'utf8').trim() };
   const bytes = Buffer.from(JSON.stringify(descriptor));
   writeJson(join(DATA, 'descriptor.json'), { payload: bytes.toString('base64'), signature: sign(null, Buffer.concat([DOMAIN, bytes]), createPrivateKey(privatePem)).toString('base64') });
-  writeJson(join(DATA, 'config.json'), { version: 1, id, listen, address: advertised, notaryPort: base, seeds: [], bootstraps: [], discovery });
+  writeJson(join(DATA, 'config.json'), { version: 1, id, listen, address: advertised, outboundOnly, notaryPort: base, seeds: [], bootstraps: [], discovery });
   console.log(JSON.stringify({ id, address: advertised, data: DATA }));
 }
 function addSeed() {
@@ -157,7 +168,8 @@ function removeBootstrap() {
 async function setDiscovery() {
   const cfg = config(); const mode = discoveryMode({ discovery: option('mode') });
   if (!option('mode')) throw new Error('Discovery mode required');
-  if (mode !== 'closed') await discoveryTarget(cfg.address, mode);
+  if (!cfg.outboundOnly && mode !== 'closed') await discoveryTarget(cfg.address, mode);
+  if (cfg.outboundOnly) await discoveryTarget(cfg.listen, 'local-test');
   if (mode === 'local-test') await discoveryTarget(cfg.listen, mode);
   cfg.discovery = mode; writeJson(join(DATA, 'config.json'), cfg);
   console.log('Discovery mode saved. Restart node to apply.');
@@ -189,7 +201,8 @@ async function start() {
   const cfg = config();
   const mode = discoveryMode(cfg);
   checkLocalIdentity(cfg);
-  if (mode !== 'closed') await discoveryTarget(cfg.address, mode);
+  if (!cfg.outboundOnly && mode !== 'closed') await discoveryTarget(cfg.address, mode);
+  if (cfg.outboundOnly) await discoveryTarget(cfg.listen, 'local-test');
   if (mode === 'local-test') await discoveryTarget(cfg.listen, mode);
   const approved = new Map(cfg.seeds.map(p => [p.id, p]));
   const pins = new Map(discoveryPins(cfg).map(p => [p.id, p]));
@@ -209,7 +222,7 @@ async function start() {
     if (desc.id === cfg.id || (pin && pin.address !== desc.address)) return false;
     if (!approved.has(desc.id)) {
       if (mode === 'closed') return false;
-      await discoveryTarget(desc.address, mode);
+      if (!desc.outboundOnly) await discoveryTarget(desc.address, mode);
     }
     const previous = peers.get(desc.id);
     if (previous && previous.address !== desc.address) return false;
@@ -220,7 +233,7 @@ async function start() {
       if (!evict) return false;
       peers.delete(evict.id); retries.delete(evict.id);
     }
-    peers.set(desc.id, { descriptor: envelope, ...desc, trusted: approved.has(desc.id), learnedAt: previous?.learnedAt || Date.now(), lastSeen: online ? Date.now() : (previous?.lastSeen || 0), confirmed: online || Boolean(previous?.confirmed) });
+    peers.set(desc.id, { descriptor: envelope, ...desc, dialable: !desc.outboundOnly, trusted: approved.has(desc.id), learnedAt: previous?.learnedAt || Date.now(), lastSeen: online ? Date.now() : (previous?.lastSeen || 0), confirmed: online || Boolean(previous?.confirmed) });
     writeJson(join(DATA, 'peers.json'), [...peers.values()]);
     return true;
   }
@@ -299,9 +312,9 @@ async function start() {
       if (desc.id !== id || (pins.has(id) && desc.address !== pins.get(id).address)) throw new Error('Descriptor does not match pinned peer');
       if (!approved.has(id) && msg.op !== 'hello') throw new Error('Peer identity not approved for notary sessions');
       // Inbound TLS proves possession of a key, not reachability of its advertised address.
-      if (!await remember(msg.descriptor, approved.has(id))) throw new Error('Peer discovery admission rejected');
+      if (!await remember(msg.descriptor, approved.has(id) || desc.outboundOnly === true)) throw new Error('Peer discovery admission rejected');
       if (msg.op === 'hello') {
-        const shared = [...peers.values()].filter(p => p.confirmed && Date.now() - p.lastSeen < 30000 && p.id !== id);
+        const shared = [...peers.values()].filter(p => p.dialable && p.confirmed && Date.now() - p.lastSeen < 30000 && p.id !== id);
         const offset = shared.length ? randomInt(shared.length) : 0;
         send(socket, { ok: true, descriptor: readJson(join(DATA, 'descriptor.json')), peers: [...shared.slice(offset), ...shared.slice(0, offset)].slice(0, 32).map(p => p.descriptor) }); socket.end(); return;
       }
@@ -349,7 +362,7 @@ async function start() {
   try { await new Promise((ok, no) => { server.once('error', no); server.listen(target.port, target.host, ok); }); }
   catch (error) { stopping = true; await killNotary(); throw error; }
   server.on('error', error => { console.error('Peer listener failed:', error.message); stop(1).catch(() => {}); });
-  console.log('NODE READY', cfg.address);
+  console.log('NODE READY', cfg.address || 'outbound-only');
   let probing = false;
   const probe = async () => {
     if (probing || stopping) return; probing = true;
@@ -360,7 +373,7 @@ async function start() {
       const candidates = new Map(cfg.seeds.map(p => [p.id, p]));
       if (mode !== 'closed') {
         for (const p of (cfg.bootstraps || [])) candidates.set(p.id, p);
-        for (const p of peers.values()) if (!candidates.has(p.id)) candidates.set(p.id, p);
+        for (const p of peers.values()) if (p.dialable && !candidates.has(p.id)) candidates.set(p.id, p);
       }
       const discovered = [...candidates.values()].filter(p => !pins.has(p.id));
       const offset = discovered.length ? randomInt(discovered.length) : 0;
@@ -384,7 +397,7 @@ async function start() {
             const offered = response.peers.slice(0, 32); const offerOffset = offered.length ? randomInt(offered.length) : 0;
             for (const discovered of [...offered.slice(offerOffset), ...offered.slice(0, offerOffset)].slice(0, 4)) {
               if (Date.now() - began > 15000 || stopping) break;
-              try { await remember(discovered); } catch {}
+              try { if (!validateDescriptor(discovered).outboundOnly) await remember(discovered); } catch {}
             }
           }
         } catch {
@@ -493,7 +506,7 @@ async function verifyJob() {
 }
 async function main() {
   const flags = {
-    init: ['data', 'address', 'listen', 'notary-port', 'discovery'], 'add-seed': ['data', 'address', 'id'], 'remove-seed': ['data', 'id'],
+    init: ['data', 'address', 'listen', 'notary-port', 'discovery', 'outbound-only'], 'add-seed': ['data', 'address', 'id'], 'remove-seed': ['data', 'id'],
     'add-bootstrap': ['data', 'address', 'id'], 'remove-bootstrap': ['data', 'id'], discovery: ['data', 'mode'],
     'renew-cert': ['data'], start: ['data'], peers: ['data'], fetch: ['data', 'job-spec'], verify: ['data', 'job', 'node-id', 'peer-id', 'expected-job', 'state']
   };

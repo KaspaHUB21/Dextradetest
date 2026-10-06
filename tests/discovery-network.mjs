@@ -112,6 +112,22 @@ try {
   await waitPeers([{ data:b.data,id:a.id }, {data:c.data,id:a.id}, {data:b.data,id:c.id}, {data:c.data,id:b.id}]);
   report.checks.push('B and C independently bootstrap from A and authenticate each other through transitive discovery');
   console.log('PASS: three nodes discover and authenticate peers without reciprocal notarizer pins');
+  const clientData = join(resultDir, 'node-outbound');
+  const client = JSON.parse(await cli('init', '--data', clientData, '--outbound-only', 'true', '--listen', '127.0.0.1:30443', '--notary-port', '30047', '--discovery', 'local-test'));
+  assert.equal(client.address, null);
+  await cli('add-bootstrap', '--data', clientData, '--address', a.address, '--id', a.id);
+  await start(clientData);
+  await waitPeers([{data:clientData,id:a.id},{data:a.data,id:client.id}]);
+  const inboundClient = read(join(a.data, 'peers.json')).find(p => p.id === client.id);
+  assert.equal(inboundClient.dialable, false);
+  assert.equal(inboundClient.trusted, false);
+  assert.equal((await exchange(clientData, a, {op:'reserve'})).ok, false);
+  const offeredToB = await exchange(b.data, a, {op:'hello'});
+  assert.ok(!offeredToB.peers.some(p => JSON.parse(Buffer.from(p.payload,'base64')).id === client.id), 'undialable clients must not enter gossip');
+  const invalidClient = await exchange(clientData, a, {op:'hello', descriptor:changedDescriptor(clientData,'192.168.10.20:30443')});
+  assert.equal(invalidClient.ok,false,'outbound-only declaration cannot advertise a private target');
+  report.checks.push('Outbound-only client without public listener authenticates bootstrap; cannot reserve, advertise a private target, or enter dialable gossip');
+  console.log('PASS: outbound-only client connects safely without a public address');
   for (const node of [b,c]) {
     for (const peer of read(join(node.data, 'peers.json'))) assert.notEqual(peer.trusted, true, 'discovery cannot grant notary trust');
   }

@@ -27,6 +27,13 @@ Ausfall des bestimmten Zeugen wird kein Ersatz neu ausgewaehlt.
 
 ### Discovery ist keine Zeugen-Zulassung
 
+Ausgehend verbundene Clients koennen mit `--outbound-only true` teilnehmen,
+ohne eine Adresse zu veroeffentlichen. Ihr signierter Descriptor muss
+`outboundOnly: true` und `address: null` enthalten. Sie werden nicht in
+dialbaren Peer-Antworten verteilt und nicht als Rueckverbindungsziel benutzt.
+Die Identitaetspruefung und Ressourcenlimits gelten weiterhin. Der Modus
+eroeffnet keine Notarsitzung und erteilt keine Zeugenberechtigung.
+
 `closed` ist der Standard fuer einen vorab zugelassenen Teilnehmerkreis.
 `public` ermoeglicht Discovery neuer Peers ueber global routbare IP-Adressen;
 `local-test` dient ausschliesslich numerischen Loopback-Adressen. Einen

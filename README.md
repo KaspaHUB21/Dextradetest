@@ -209,6 +209,29 @@ derselben Identitaet und erfordert ebenfalls einen Neustart.
 
 ## Verbindung ueber das Internet
 
+### Lokale Node hinter einem Router
+
+Eine Node ohne oeffentlichen Listener kann sich ausgehend mit dem Bootstrap
+verbinden. Sie veroeffentlicht keine erfundene oder private Peer-Adresse:
+
+```bash
+./oracle-node init --data "$HOME/oracle-local-data" \
+  --outbound-only true --listen 127.0.0.1:19443 --discovery public
+./oracle-node add-bootstrap --data "$HOME/oracle-local-data" \
+  --address 152.53.92.135:9443 --id BESTAETIGTE_BOOTSTRAP_NODE_ID
+./oracle-node start --data "$HOME/oracle-local-data"
+```
+
+Der Bootstrap muss die aktuelle Version mit Unterstuetzung fuer
+`outboundOnly` ausfuehren. Der signierte Client-Descriptor enthaelt
+`address: null`; Client-Zertifikat und Signatur werden geprueft. Der
+Bootstrap waehlt den Client nicht fuer Rueckverbindungen und gibt ihn
+nicht als dialbaren Peer weiter. Die Peer-Liste kennzeichnet `dialable`
+und `trusted` getrennt. Dieser Modus dient derzeit der Peer-Suche;
+eine Notarberechtigung entsteht dadurch nicht.
+
+### Oeffentlich erreichbare Teilnehmer
+
 Die gleichen Programme unterstuetzen DNS-Namen oder IP-Adressen. Fuer einen
 erreichbaren Host beispielsweise bei `init` eine oeffentlich erreichbare
 Adresse und einen Listen-Socket angeben:
