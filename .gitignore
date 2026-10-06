@@ -9,6 +9,9 @@ tests/results/
 *.secrets.tlsn
 .tools/
 .install-stage.*/
+/experiments/subsecond/bin/
+/experiments/subsecond/engine/target/
+/experiments/subsecond/results/
 !vendor/tlsn/crates/**/test-ca/**/*.key
 !vendor/tlsn/crates/**/server-fixture/src/*.key
 !vendor/tlsn/crates/server-fixture/certs/src/tls/*.key

@@ -1,0 +1,477 @@
+{
+  "schemaVersion": 1,
+  "evidenceDate": "2026-10-06",
+  "scope": "Historical isolated experiments; not a production under-one-second implementation or security audit.",
+  "productionDefaultsChanged": false,
+  "goal": {
+    "underOneSecondObservedOnlyWithLocalKnownJob": true,
+    "underOneSecondPublicPeerAchieved": false,
+    "underOneSecondUnknownJobEndToEndEstablished": false,
+    "underOneMbAchieved": false
+  },
+  "historicalCases": [
+    {
+      "case": 1,
+      "kind": "fewer-rounds",
+      "verified": true,
+      "totalMs": 9137.015393,
+      "triggerToRecordedCompletionMs": 2980.050741,
+      "completionBoundary": "fetch command returned; includes its result validation",
+      "phasesMs": {
+        "preprocess": 3861,
+        "transport_setup": 3,
+        "http_mpc": 2077,
+        "prove": 634,
+        "prover_close": 1,
+        "attestation_exchange": 104,
+        "notarize_total": 740,
+        "finish_disk": 4
+      },
+      "freshSingleUseSession": true,
+      "jobKnownBeforePreparation": true
+    },
+    {
+      "case": 2,
+      "kind": "fewer-rounds",
+      "verified": true,
+      "totalMs": 8746.810307,
+      "triggerToRecordedCompletionMs": 2660.621459,
+      "completionBoundary": "fetch command returned; includes its result validation",
+      "phasesMs": {
+        "preprocess": 3805,
+        "transport_setup": 4,
+        "http_mpc": 1920,
+        "prove": 476,
+        "prover_close": 1,
+        "attestation_exchange": 103,
+        "notarize_total": 582,
+        "finish_disk": 0
+      },
+      "freshSingleUseSession": true,
+      "jobKnownBeforePreparation": true
+    },
+    {
+      "case": 3,
+      "kind": "tls-warmed-public-peer",
+      "verified": true,
+      "totalMs": 10448.26971,
+      "triggerToRecordedCompletionMs": 1477.789618,
+      "completionBoundary": "fetch command returned; includes its result validation",
+      "phasesMs": {
+        "preprocess": 3691,
+        "transport_setup": 5010,
+        "http_mpc": 732,
+        "prove": 481,
+        "prover_close": 2,
+        "attestation_exchange": 104,
+        "notarize_total": 589,
+        "finish_disk": 0
+      },
+      "freshSingleUseSession": true,
+      "jobKnownBeforePreparation": true
+    },
+    {
+      "case": 4,
+      "kind": "tls-warmed-public-peer",
+      "verified": true,
+      "totalMs": 10450.574466,
+      "triggerToRecordedCompletionMs": 1496.6557,
+      "completionBoundary": "fetch command returned; includes its result validation",
+      "phasesMs": {
+        "preprocess": 3674,
+        "transport_setup": 5011,
+        "http_mpc": 745,
+        "prove": 482,
+        "prover_close": 1,
+        "attestation_exchange": 116,
+        "notarize_total": 601,
+        "finish_disk": 0
+      },
+      "freshSingleUseSession": true,
+      "jobKnownBeforePreparation": true
+    },
+    {
+      "case": 5,
+      "kind": "tls-warmed-local-witness",
+      "verified": true,
+      "totalMs": 6387.116802,
+      "triggerToRecordedCompletionMs": 753.362971,
+      "completionBoundary": "native verifier completed; final JavaScript parsing and live job validation excluded",
+      "phasesMs": {
+        "preprocess": 576,
+        "transport_setup": 5021,
+        "http_mpc": 513,
+        "prove": 185,
+        "prover_close": 1,
+        "attestation_exchange": 8,
+        "notarize_total": 196,
+        "finish_disk": 0
+      },
+      "freshSingleUseSession": true,
+      "jobKnownBeforePreparation": true
+    },
+    {
+      "case": 6,
+      "kind": "tls-warmed-local-witness",
+      "verified": true,
+      "totalMs": 6204.364009,
+      "triggerToRecordedCompletionMs": 655.012719,
+      "completionBoundary": "native verifier completed; final JavaScript parsing and live job validation excluded",
+      "phasesMs": {
+        "preprocess": 476,
+        "transport_setup": 5033,
+        "http_mpc": 430,
+        "prove": 184,
+        "prover_close": 1,
+        "attestation_exchange": 7,
+        "notarize_total": 194,
+        "finish_disk": 0
+      },
+      "freshSingleUseSession": true,
+      "jobKnownBeforePreparation": true
+    }
+  ],
+  "securityChecks": {
+    "productionVerifierUnchanged": true,
+    "functionalTestCount": 24,
+    "allPassed": true,
+    "independentlyRepeatedOffline": true,
+    "audit": false,
+    "tests": [
+      {
+        "test": 1,
+        "kind": "fewer-rounds",
+        "name": "original",
+        "passed": true,
+        "exitCode": 0,
+        "message": "VERIFIED: API identity, pinned notary key, full request and response. KAS-USDT = 0.04334 USDT"
+      },
+      {
+        "test": 2,
+        "kind": "fewer-rounds",
+        "name": "modified-api-price",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: presentation error: transcript error caused by: transcript proof error: hash error caused by: hash opening does not match any commitment\n\nCaused by:\n    0: transcript proof error: hash error caused by: hash opening does not match any commitment\n    1: hash opening does not match any commitment"
+      },
+      {
+        "test": 3,
+        "kind": "fewer-rounds",
+        "name": "wrong-notary",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: Untrusted notary key"
+      },
+      {
+        "test": 4,
+        "kind": "fewer-rounds",
+        "name": "wrong-job",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: Missing or mismatched authenticated job challenge"
+      },
+      {
+        "test": 5,
+        "kind": "fewer-rounds",
+        "name": "original",
+        "passed": true,
+        "exitCode": 0,
+        "message": "VERIFIED: API identity, pinned notary key, full request and response. KAS-USDT = 0.04334 USDT"
+      },
+      {
+        "test": 6,
+        "kind": "fewer-rounds",
+        "name": "modified-api-price",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: presentation error: transcript error caused by: transcript proof error: hash error caused by: hash opening does not match any commitment\n\nCaused by:\n    0: transcript proof error: hash error caused by: hash opening does not match any commitment\n    1: hash opening does not match any commitment"
+      },
+      {
+        "test": 7,
+        "kind": "fewer-rounds",
+        "name": "wrong-notary",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: Untrusted notary key"
+      },
+      {
+        "test": 8,
+        "kind": "fewer-rounds",
+        "name": "wrong-job",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: Missing or mismatched authenticated job challenge"
+      },
+      {
+        "test": 9,
+        "kind": "tls-warmed-public-peer",
+        "name": "original",
+        "passed": true,
+        "exitCode": 0,
+        "message": "VERIFIED: API identity, pinned notary key, full request and response. KAS-USDT = 0.04334 USDT"
+      },
+      {
+        "test": 10,
+        "kind": "tls-warmed-public-peer",
+        "name": "modified-api-price",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: presentation error: transcript error caused by: transcript proof error: hash error caused by: hash opening does not match any commitment\n\nCaused by:\n    0: transcript proof error: hash error caused by: hash opening does not match any commitment\n    1: hash opening does not match any commitment"
+      },
+      {
+        "test": 11,
+        "kind": "tls-warmed-public-peer",
+        "name": "wrong-notary",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: Untrusted notary key"
+      },
+      {
+        "test": 12,
+        "kind": "tls-warmed-public-peer",
+        "name": "wrong-job",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: Missing or mismatched authenticated job challenge"
+      },
+      {
+        "test": 13,
+        "kind": "tls-warmed-public-peer",
+        "name": "original",
+        "passed": true,
+        "exitCode": 0,
+        "message": "VERIFIED: API identity, pinned notary key, full request and response. KAS-USDT = 0.04334 USDT"
+      },
+      {
+        "test": 14,
+        "kind": "tls-warmed-public-peer",
+        "name": "modified-api-price",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: presentation error: transcript error caused by: transcript proof error: hash error caused by: hash opening does not match any commitment\n\nCaused by:\n    0: transcript proof error: hash error caused by: hash opening does not match any commitment\n    1: hash opening does not match any commitment"
+      },
+      {
+        "test": 15,
+        "kind": "tls-warmed-public-peer",
+        "name": "wrong-notary",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: Untrusted notary key"
+      },
+      {
+        "test": 16,
+        "kind": "tls-warmed-public-peer",
+        "name": "wrong-job",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: Missing or mismatched authenticated job challenge"
+      },
+      {
+        "test": 17,
+        "kind": "tls-warmed-local-witness",
+        "name": "original",
+        "passed": true,
+        "exitCode": 0,
+        "message": "VERIFIED: API identity, pinned notary key, full request and response. KAS-USDT = 0.04332 USDT"
+      },
+      {
+        "test": 18,
+        "kind": "tls-warmed-local-witness",
+        "name": "modified-api-price",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: presentation error: transcript error caused by: transcript proof error: hash error caused by: hash opening does not match any commitment\n\nCaused by:\n    0: transcript proof error: hash error caused by: hash opening does not match any commitment\n    1: hash opening does not match any commitment"
+      },
+      {
+        "test": 19,
+        "kind": "tls-warmed-local-witness",
+        "name": "wrong-notary",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: Untrusted notary key"
+      },
+      {
+        "test": 20,
+        "kind": "tls-warmed-local-witness",
+        "name": "wrong-job",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: Missing or mismatched authenticated job challenge"
+      },
+      {
+        "test": 21,
+        "kind": "tls-warmed-local-witness",
+        "name": "original",
+        "passed": true,
+        "exitCode": 0,
+        "message": "VERIFIED: API identity, pinned notary key, full request and response. KAS-USDT = 0.04332 USDT"
+      },
+      {
+        "test": 22,
+        "kind": "tls-warmed-local-witness",
+        "name": "modified-api-price",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: presentation error: transcript error caused by: transcript proof error: hash error caused by: hash opening does not match any commitment\n\nCaused by:\n    0: transcript proof error: hash error caused by: hash opening does not match any commitment\n    1: hash opening does not match any commitment"
+      },
+      {
+        "test": 23,
+        "kind": "tls-warmed-local-witness",
+        "name": "wrong-notary",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: Untrusted notary key"
+      },
+      {
+        "test": 24,
+        "kind": "tls-warmed-local-witness",
+        "name": "wrong-job",
+        "passed": true,
+        "exitCode": 1,
+        "message": "Error: Missing or mismatched authenticated job challenge"
+      }
+    ]
+  },
+  "sourceFindings": [
+    {
+      "file": "node prototyp/vendor/tlsn/crates/core/src/config/tls_commit/mpc.rs",
+      "finding": "NetworkSetting::Bandwidth uses fewer rounds and more bytes; cryptographic checks remain enabled."
+    },
+    {
+      "file": "node prototyp/vendor/tlsn/crates/tlsn/src/mpz.rs",
+      "finding": "The network setting chooses Normal versus Reduced PRF implementation, not insecure mode."
+    },
+    {
+      "file": "node prototyp/vendor/tlsn/crates/tls/client-async/src/lib.rs",
+      "finding": "TLS connection driver starts the handshake independently and admits application writes only after handshake completion. This supports holding an open fresh session before a request."
+    }
+  ],
+  "constraints": [
+    "Known jobs and their challenges existed before preparation; not an unknown-job session pool.",
+    "TLS connection was opened before the trigger; the HTTP request was submitted only after it.",
+    "TLS warming used a three-second driver hold followed by a two-second demonstration hold; readiness was not proven by a public handshake-ready API.",
+    "Each query used a fresh single-use session; no session key or MPC material reuse.",
+    "Local historical timer excluded final JSON parsing and JavaScript live job validation, although those checks subsequently passed.",
+    "Loopback results do not include full peer job delivery, witness selection or independent operators.",
+    "Existing authenticated TLS session-time freshness rules remain unchanged and can reject sessions opened before an unknown job window.",
+    "Normal MPC, certificate verification, pinned notary key and authenticated job challenge remained enabled; no Proxy-TLS or full reveal shortcut.",
+    "Fewer rounds trade increased communication for latency; traffic below one megabyte has not been achieved.",
+    "Two samples per configuration do not establish tail latency, a network SLA or formal security equivalence.",
+    "No benchmark artifacts, runtime secrets, local user paths or private keys are published in this evidence file."
+  ],
+  "sources": [
+    "https://tlsnotary.org/docs/protocol/configuration/",
+    "https://tlsnotary.org/blog/2025/08/31/benchmarks/"
+  ],
+  "portableRunnerRetest": {
+    "success": true,
+    "completionBoundary": "Native verification, result JSON parsing and JavaScript live job validation completed; negative checks executed afterward.",
+    "scope": "Opt-in Linux loopback known-job benchmark; API request sent after local trigger. Preparation, three-second time-based TLS warming and two-second demonstration hold excluded from trigger latency. No public-peer or arbitrary-arriving-job SLA.",
+    "effectiveConfig": {
+      "server": "api.kucoin.com",
+      "symbol": "KAS-USDT",
+      "protocol": "MPC",
+      "network": "Bandwidth",
+      "sentLimit": 512,
+      "recvLimit": 16384,
+      "sentRecords": 2,
+      "recvRecordsOnline": 2,
+      "revealAll": false,
+      "singleUse": true,
+      "warmDeadlineMs": 60000,
+      "isolatedNotaryLifetimeMs": 65000,
+      "requiredRuntime": "Linux, Node.js, GNU coreutils timeout"
+    },
+    "binarySha256": {
+      "prove": "0710b27f445c56fa12fc2c242237bdb6137a19a49a20a849577a1e8b638e0af9",
+      "notary": "75eaebe18ef194e5fcb4ee670f2246549743bd3fb3d9095a67954a2305180e6c",
+      "present": "b771e6e3036bbabbef1666e7354bb28db1696f05fc76cde18fb8871329115c85",
+      "verify": "1ae12bc9ae24caab991cf4c558c677e63fa197204fca5d8d84efd978b75506f3"
+    },
+    "functionalTestCount": 8,
+    "samples": [
+      {
+        "verified": true,
+        "triggerToFullyValidatedMs": 743.598273,
+        "totalMs": 6326.185342,
+        "phasesMs": {
+          "preprocess": 556,
+          "transport_setup": 5013,
+          "http_mpc": 455,
+          "prove": 241,
+          "prover_close": 1,
+          "attestation_exchange": 8,
+          "notarize_total": 252,
+          "finish_disk": 0
+        },
+        "sessionReused": false,
+        "presentationBytes": 4756,
+        "requestBytes": 274,
+        "responseBytes": 1022,
+        "securityChecks": [
+          {
+            "name": "original",
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "modified-api-price",
+            "passed": true,
+            "exitCode": 1
+          },
+          {
+            "name": "wrong-notary",
+            "passed": true,
+            "exitCode": 1
+          },
+          {
+            "name": "wrong-job",
+            "passed": true,
+            "exitCode": 1
+          }
+        ]
+      },
+      {
+        "verified": true,
+        "triggerToFullyValidatedMs": 773.352711,
+        "totalMs": 6309.089553,
+        "phasesMs": {
+          "preprocess": 509,
+          "transport_setup": 5013,
+          "http_mpc": 481,
+          "prove": 245,
+          "prover_close": 1,
+          "attestation_exchange": 8,
+          "notarize_total": 255,
+          "finish_disk": 0
+        },
+        "sessionReused": false,
+        "presentationBytes": 4755,
+        "requestBytes": 274,
+        "responseBytes": 1022,
+        "securityChecks": [
+          {
+            "name": "original",
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "modified-api-price",
+            "passed": true,
+            "exitCode": 1
+          },
+          {
+            "name": "wrong-notary",
+            "passed": true,
+            "exitCode": 1
+          },
+          {
+            "name": "wrong-job",
+            "passed": true,
+            "exitCode": 1
+          }
+        ]
+      }
+    ]
+  }
+}

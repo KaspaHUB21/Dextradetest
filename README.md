@@ -528,3 +528,11 @@ Vor einer Veroeffentlichung sind die Lizenzhinweise aller Abhaengigkeiten zu
 pruefen und zu uebernehmen.
 
 TLSNotary: https://tlsnotary.org/docs/intro/
+
+## Optionaler Latenzversuch
+
+Der separat zu startende [Subsekunden-Benchmark](experiments/subsecond/README.md)
+untersucht vorbereitete, einmal verwendete MPC-TLS-Sitzungen. Er aendert weder
+die Node-Installation noch den laufenden Dienst. Unter einer Sekunde wurde
+bisher nur im lokalen Kryptografie-Test fuer vorher bekannte Jobs beobachtet;
+eine solche Antwortzeit fuer beliebige Internet-Jobs ist nicht nachgewiesen.
