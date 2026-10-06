@@ -1,5 +1,20 @@
 # Haertung und erfolgreiche Tests
 
+## Echter Job: lokale Node und externer Kasvio-Notar
+
+Am 6. Oktober 2026 fuehrte die lokale WSL-Node einen KAS-USDT-Job mit dem
+externen Notar `152.53.92.135:9443` aus. KuCoin lieferte `0.04378` USDT.
+Der TLSNotary-Beleg wurde gegen Job und beide erwarteten Identitaeten
+geprueft und einmalig angenommen. Erneute Einreichung scheiterte mit
+`Replay rejected: job execution or TLS proof already consumed`.
+Oeffentliche Belegdateien liegen lokal unter `tests/results/kasvio-live-job`;
+private Schluessel und TLSNotary-Secrets wurden nicht exportiert.
+
+Fuer diesen Job wurde die lokale Identitaet gezielt als eingehender Client
+auf dem Notar zugelassen. Sie ist dadurch kein vertrauenswuerdiger Notar.
+Der neue Zulassungs-/Widerrufstest und alle elf Peer-Sicherheitspruefungen
+bestanden zuvor (`discovery-6HxT5M`, `peer-security-VSG9sU`).
+
 ## Lokale Node zum externen Kasvio-Bootstrap
 
 Am 6. Oktober 2026 wurde eine zweite Node auf dem lokalen Rechner in WSL

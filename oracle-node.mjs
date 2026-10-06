@@ -35,7 +35,7 @@ function discoveryMode(cfg) {
   if (!['closed', 'public', 'local-test'].includes(mode)) throw new Error('Invalid discovery mode');
   return mode;
 }
-function discoveryPins(cfg) { return [...cfg.seeds, ...(cfg.bootstraps || [])]; }
+function discoveryPins(cfg) { return [...cfg.seeds, ...(cfg.bootstraps || []), ...(cfg.clients || []).map(id => ({ id, address: null }))]; }
 function credentials() { return { key: readFileSync(join(DATA, 'identity.key')), cert: readFileSync(join(DATA, 'identity.crt')) }; }
 function validateDescriptor(envelope) {
   if (typeof envelope?.payload !== 'string' || envelope.payload.length > 16000 || typeof envelope.signature !== 'string') throw new Error('Invalid descriptor');
@@ -144,10 +144,25 @@ function addSeed() {
   const cfg = config(); const peer = { address: option('address'), id: option('id') };
   address(peer.address);
   if (!/^[a-f0-9]{64}$/.test(peer.id) || peer.id === cfg.id) throw new Error('Invalid other node ID');
+  if ((cfg.clients || []).includes(peer.id)) throw new Error('Identity is already an outbound-only client');
   if ((cfg.bootstraps || []).some(p => p.id === peer.id && p.address !== peer.address)) throw new Error('Conflicting bootstrap address');
   if (!cfg.seeds.some(p => p.id === peer.id) && cfg.seeds.length >= 32) throw new Error('Pinned peer limit reached; remove a seed explicitly');
   cfg.seeds = [...cfg.seeds.filter(p => p.id !== peer.id), peer];
   writeJson(join(DATA, 'config.json'), cfg); console.log('Seed saved; this identity is explicitly trusted for the prototype.');
+}
+function allowClient(remove = false) {
+  const cfg = config(); const id = option('id'); const clients = cfg.clients || [];
+  if (!/^[a-f0-9]{64}$/.test(id) || id === cfg.id) throw new Error('Invalid client identity');
+  if (remove) {
+    if (!clients.includes(id)) throw new Error('Unknown authorized client');
+    cfg.clients = clients.filter(value => value !== id);
+  } else {
+    if ([...cfg.seeds, ...(cfg.bootstraps || [])].some(p => p.id === id)) throw new Error('Identity already has a dialable peer pin');
+    if (!clients.includes(id) && clients.length >= 32) throw new Error('Authorized client limit reached');
+    cfg.clients = [...new Set([...clients, id])];
+  }
+  writeJson(join(DATA, 'config.json'), cfg);
+  console.log('Client authorization saved. Restart node to apply. Client is not a trusted witness.');
 }
 async function addBootstrap() {
   const cfg = config(); const peer = { address: option('address'), id: option('id') };
@@ -205,6 +220,7 @@ async function start() {
   if (cfg.outboundOnly) await discoveryTarget(cfg.listen, 'local-test');
   if (mode === 'local-test') await discoveryTarget(cfg.listen, mode);
   const approved = new Map(cfg.seeds.map(p => [p.id, p]));
+  const clients = new Set(cfg.clients || []);
   const pins = new Map(discoveryPins(cfg).map(p => [p.id, p]));
   const peers = new Map(); const incoming = new Set(); const ipCounts = new Map();
   const retries = new Map();
@@ -221,7 +237,8 @@ async function start() {
     const desc = validateDescriptor(envelope); const pin = pins.get(desc.id);
     if (desc.id === cfg.id || (pin && pin.address !== desc.address)) return false;
     if (!approved.has(desc.id)) {
-      if (mode === 'closed') return false;
+      if (mode === 'closed' && !clients.has(desc.id)) return false;
+      if (clients.has(desc.id) && !desc.outboundOnly) return false;
       if (!desc.outboundOnly) await discoveryTarget(desc.address, mode);
     }
     const previous = peers.get(desc.id);
@@ -304,13 +321,13 @@ async function start() {
       const id = peerId(socket);
       if (mode === 'local-test' && !isDiscoveryAddressAllowed(socket.remoteAddress, 'local-test')) throw new Error('Local-test accepts loopback connections only');
       // Closed mode preserves admission before parsing; open mode admits discovery only.
-      if (!approved.has(id) && mode === 'closed') throw new Error('Peer identity not approved');
+      if (!approved.has(id) && !clients.has(id) && mode === 'closed') throw new Error('Peer identity not approved');
       if (!rate('peer:' + id, 90, 60000)) throw new Error('Peer request rate exceeded');
       const msg = await line(socket);
       if (!msg || typeof msg !== 'object' || Array.isArray(msg)) throw new Error('Invalid peer request');
       const desc = validateDescriptor(msg.descriptor);
       if (desc.id !== id || (pins.has(id) && desc.address !== pins.get(id).address)) throw new Error('Descriptor does not match pinned peer');
-      if (!approved.has(id) && msg.op !== 'hello') throw new Error('Peer identity not approved for notary sessions');
+      if (!approved.has(id) && !clients.has(id) && msg.op !== 'hello') throw new Error('Peer identity not approved for notary sessions');
       // Inbound TLS proves possession of a key, not reachability of its advertised address.
       if (!await remember(msg.descriptor, approved.has(id) || desc.outboundOnly === true)) throw new Error('Peer discovery admission rejected');
       if (msg.op === 'hello') {
@@ -508,6 +525,7 @@ async function main() {
   const flags = {
     init: ['data', 'address', 'listen', 'notary-port', 'discovery', 'outbound-only'], 'add-seed': ['data', 'address', 'id'], 'remove-seed': ['data', 'id'],
     'add-bootstrap': ['data', 'address', 'id'], 'remove-bootstrap': ['data', 'id'], discovery: ['data', 'mode'],
+    'allow-client': ['data', 'id'], 'remove-client': ['data', 'id'],
     'renew-cert': ['data'], start: ['data'], peers: ['data'], fetch: ['data', 'job-spec'], verify: ['data', 'job', 'node-id', 'peer-id', 'expected-job', 'state']
   };
   const allowed = flags[command];
@@ -522,6 +540,8 @@ async function main() {
   if (command === 'init') return init();
   if (command === 'add-seed') return addSeed();
   if (command === 'remove-seed') return removeSeed();
+  if (command === 'allow-client') return allowClient();
+  if (command === 'remove-client') return allowClient(true);
   if (command === 'add-bootstrap') return addBootstrap();
   if (command === 'remove-bootstrap') return removeBootstrap();
   if (command === 'discovery') return setDiscovery();

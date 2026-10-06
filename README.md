@@ -230,6 +230,23 @@ nicht als dialbaren Peer weiter. Die Peer-Liste kennzeichnet `dialable`
 und `trusted` getrennt. Dieser Modus dient derzeit der Peer-Suche;
 eine Notarberechtigung entsteht dadurch nicht.
 
+Fuer einen API-Job den oeffentlichen Notar auf dem Client mit `add-seed`
+zulassen. Der Notar kann genau diese ausgehende Client-Identitaet fuer
+Anfragen freigeben, ohne sie als Notar zu behandeln:
+
+```bash
+# Auf dem Notar, danach dessen Dienst neu starten:
+./oracle-node allow-client --data /pfad/notar-daten --id CLIENT_NODE_ID
+# Auf dem Client:
+./oracle-node add-seed --data "$HOME/oracle-local-data" \
+  --address 152.53.92.135:9443 --id BESTAETIGTE_BOOTSTRAP_NODE_ID
+./oracle-node fetch --data "$HOME/oracle-local-data"
+```
+
+`remove-client --data /pfad/notar-daten --id CLIENT_NODE_ID` widerruft die
+Freigabe nach einem Dienstneustart. Hoechstens 32 Client-IDs sind erlaubt;
+sie werden weder zur Zeugenliste noch zu ausgehenden Verbindungszielen.
+
 ### Oeffentlich erreichbare Teilnehmer
 
 Die gleichen Programme unterstuetzen DNS-Namen oder IP-Adressen. Fuer einen

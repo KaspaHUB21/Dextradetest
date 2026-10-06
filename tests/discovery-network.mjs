@@ -108,7 +108,7 @@ try {
   await cli('add-bootstrap', '--data', c.data, '--address', a.address, '--id', a.id);
   assert.equal(read(join(a.data, 'config.json')).seeds.length, 0);
   for (const node of nodes) assert.equal(read(join(node.data, 'config.json')).seeds.length, 0);
-  await start(a.data); await start(b.data); await start(c.data);
+  let processA = await start(a.data); await start(b.data); await start(c.data);
   await waitPeers([{ data:b.data,id:a.id }, {data:c.data,id:a.id}, {data:b.data,id:c.id}, {data:c.data,id:b.id}]);
   report.checks.push('B and C independently bootstrap from A and authenticate each other through transitive discovery');
   console.log('PASS: three nodes discover and authenticate peers without reciprocal notarizer pins');
@@ -152,6 +152,18 @@ try {
   assert.equal(read(join(a.data, 'peers.json')).find(p => p.id === c.id).address, c.address);
   report.checks.push('Signed pinned-bootstrap address redirection and numeric private non-loopback discovery targets rejected without changing known addresses');
   console.log('PASS: descriptor signatures do not bypass address pinning or discovery network restrictions');
+  await cli('allow-client','--data',a.data,'--id',client.id);
+  await stop(processA); processA = await start(a.data);
+  const reservation = await exchange(clientData,a,{op:'reserve'});
+  assert.equal(reservation.ok,true,'explicitly authorized outbound client can reserve');
+  assert.equal((await exchange(clientData,a,{op:'release',token:reservation.token})).ok,true);
+  assert.equal(read(join(a.data,'config.json')).seeds.length,0,'client authorization does not add witnesses');
+  await assert.rejects(cli('fetch','--data',a.data),/trusted|pinned|witness/i);
+  await cli('remove-client','--data',a.data,'--id',client.id);
+  await stop(processA); processA = await start(a.data);
+  assert.equal((await exchange(clientData,a,{op:'reserve'})).ok,false,'removed client denied after restart');
+  report.checks.push('Explicit client authorization permits reservation and release without witness trust; removal revokes it after restart');
+  console.log('PASS: explicit outbound client authorization and revocation');
   for (const node of nodes) assert.equal(read(join(node.data, 'config.json')).seeds.length, 0);
   report.success = true;
 } catch (error) {

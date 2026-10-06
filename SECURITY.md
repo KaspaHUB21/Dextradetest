@@ -33,6 +33,11 @@ ohne eine Adresse zu veroeffentlichen. Ihr signierter Descriptor muss
 dialbaren Peer-Antworten verteilt und nicht als Rueckverbindungsziel benutzt.
 Die Identitaetspruefung und Ressourcenlimits gelten weiterhin. Der Modus
 eroeffnet keine Notarsitzung und erteilt keine Zeugenberechtigung.
+Eine ausdrueckliche `allow-client`-Freigabe erlaubt einem bekannten
+Outbound-Client eingehende Jobreservierungen und Sitzungskanaele. Seine
+TLS-Identitaet und sein signierter adressloser Descriptor muessen zum
+gespeicherten Client-Pin passen. Die maximal 32 Freigaben sind getrennt
+von Notar-Seeds; `remove-client` plus Dienstneustart widerruft sie.
 
 `closed` ist der Standard fuer einen vorab zugelassenen Teilnehmerkreis.
 `public` ermoeglicht Discovery neuer Peers ueber global routbare IP-Adressen;
