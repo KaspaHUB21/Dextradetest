@@ -14,6 +14,10 @@ for tool in node cargo rustc openssl cc readlink mktemp; do
   command -v "$tool" >/dev/null || { printf 'Missing prerequisite: %s\n' "$tool" >&2; exit 1; }
 done
 node -e 'if (Number(process.versions.node.split(".")[0]) < 22) { console.error("Node.js 22+ required"); process.exit(1); }'
+for source in oracle-node.mjs jobs.mjs discovery-address.mjs mesh-link.mjs job-queue.mjs witness-selection.mjs; do
+  [[ -f "$source" ]] || { echo "Missing node source: $source" >&2; exit 1; }
+  node --check "$source"
+done
 openssl version >/dev/null
 [[ -f tlsn-engine/Cargo.lock && -f vendor/tlsn/Cargo.toml ]] || { echo 'Missing locked dependencies or TLSNotary vendor source.' >&2; exit 1; }
 for executable in notary prove present verify; do

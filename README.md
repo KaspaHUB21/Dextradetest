@@ -20,9 +20,11 @@ oder TLSNotary-Zeuge arbeiten. Keine Kaspa-Anbindung in diesem Prototyp.
 - Discovery-Bootstraps und zugelassene Zeugen sind getrennt: `add-bootstrap`
   erlaubt Peer-Suche, `add-seed` erlaubt Zusammenarbeit bei TLSNotary-Jobs.
   Ein entdeckter Peer wird dadurch nicht automatisch zum Zeugen.
-- API-Jobs nutzen einen explizit als Seed vertrauten Peer. Der Job-Hash bestimmt
-  ihn aus der sortierten Seed-Liste; ist er nicht erreichbar, scheitert der Job.
-  Es wird nicht erneut gewuerfelt. Die zugelassene Liste muss verbindlich sein.
+- API-Jobs waehlen kryptografisch zufaellig einen erreichbaren explizit
+  zugelassenen Zeugen. Die Wahl wird vor Kontakt dauerhaft fuer den Job
+  gespeichert; ist dieser Zeuge spaeter nicht erreichbar, scheitert der Job.
+  Es wird nicht erneut gewuerfelt. Lokaler Zufall ist keine netzwerkweit
+  nachpruefbare oder Sybil-resistente Auswahl.
   Entdeckte Identitaeten werden nicht automatisch zu vertrauenswuerdigen Notaren.
 - Der Zeuge leitet nur zu `api.kucoin.com:443` weiter. MPC-, Kontroll- und
   Weiterleitungskanal laufen innerhalb der authentifizierten Peer-Verbindung.
@@ -38,6 +40,12 @@ oder TLSNotary-Zeuge arbeiten. Keine Kaspa-Anbindung in diesem Prototyp.
   abgelaufene und mehrfach eingereichte Ergebnisse.
 - Verbindungs-/Ratenlimits, Nachrichten-/Dateigrenzen, Kanalreservierungen,
   Prozess-Zeitlimits und begrenzte Logs schuetzen die lokalen Ressourcen.
+- Dauerhafte gegenseitig authentifizierte Mesh-Verbindungen transportieren
+  Kontrollnachrichten und Kanaele in beide Richtungen. Eine Node ohne
+  beworbene oeffentliche Adresse kann ueber ihren ausgehenden Link auch
+  explizit als Zeuge zugelassen werden.
+- Peer-Jobs: `submit`, `job-status` und `job-result` uebertragen einen Auftrag,
+  verfolgen dessen dauerhaften Zustand und importieren den geprueften Beleg.
 
 ## Installation auf Linux
 
@@ -207,6 +215,109 @@ auf dem nativen Linux-Dateisystem ablegen, nicht auf einem Windows-Laufwerk.
 den Dienst danach neu starten. `renew-cert` erneuert das Zertifikat unter
 derselben Identitaet und erfordert ebenfalls einen Neustart.
 
+## Einen Job an einen Peer uebergeben
+
+Fuer die bereits eingerichtete Kasvio-Installation stehen konkrete
+Serverbefehle unter [docs/KASVIO.md](docs/KASVIO.md).
+
+Die Nodes muessen laufen und ueber einen authentifizierten Link verbunden
+sein. Ein bereits bekannter signierter Peer kann nach Pruefung seiner ID
+ausdruecklich zugelassen werden. Beispiel: A und B haben sich ueber Bootstrap
+gefunden; A soll ausfuehren und B soll bezeugen:
+
+```bash
+./oracle-node trust-peer --data /pfad/node-a --id NODE_ID_B
+./oracle-node trust-peer --data /pfad/node-b --id NODE_ID_A
+```
+
+Danach beide Dienste neu starten. `trust-peer` uebernimmt den bereits
+authentifizierten Descriptor einschliesslich Notarschluessel; die Freigabe
+ist eine Vertrauensentscheidung des Betreibers. Sie wird nicht automatisch
+aus Discovery abgeleitet. Fuer B ohne beworbene Adresse ist A's bestehender
+Mesh-Link der Rueckkanal. B bleibt `address: null` und `dialable: false`.
+
+Auf B einen Auftrag an A senden:
+
+```bash
+./oracle-node submit --data /pfad/node-b --peer-id NODE_ID_A \
+  --job-spec /pfad/erwarteter-job.json
+./oracle-node job-status --data /pfad/node-b --peer-id NODE_ID_A \
+  --queue-id QUEUE_ID_AUS_SUBMIT
+./oracle-node job-result --data /pfad/node-b --peer-id NODE_ID_A \
+  --queue-id QUEUE_ID_AUS_SUBMIT
+```
+
+`submit` liefert `queueId`, `status` und `jobHash` und speichert den
+erwarteten Auftrag lokal unter `submitted-jobs/`. Ohne `--job-spec` wird
+ein lokaler KuCoin-Testauftrag erzeugt. Statuswerte sind `pending`, `running`,
+`completed` und `failed`. Nur der zugelassene urspruengliche Auftraggeber
+kann den Status oder Ergebnisbeleg abrufen. Eine bekannte Queue-ID allein
+erteilt keine Zugriffsberechtigung.
+
+`job-result` speichert den oeffentlichen Beleg in einem eigenen `jobs/`-
+Unterordner und prueft ihn gegen die lokal beim Submit gespeicherte
+Spezifikation, Worker-Identitaet und zugelassenen Notar. Ein Job wird nur
+einmal in der lokalen Annahmeliste akzeptiert. Die eigenen Spezifikationen
+und diese Liste dauerhaft bewahren; sie sind die lokale Vertrauensgrundlage.
+
+Mit Warteoption erfolgt die Statusabfrage und Ergebnispruefung automatisch:
+
+```bash
+./oracle-node submit --data /pfad/node-b --peer-id NODE_ID_A \
+  --job-spec /pfad/erwarteter-job.json --wait true
+```
+
+Die Queue persistiert Auftraege. Derselbe Auftrag vom selben Auftraggeber
+liefert beim erneuten Submit dieselbe Queue-ID und wird nicht erneut
+ausgefuehrt. Eine veraenderte Spezifikation derselben Job-ID/Ausfuehrung
+wird abgewiesen. Wartende Auftraege koennen nach Neustart fortfahren;
+unterbrochene laufende Ausfuehrungen werden als fehlgeschlagen markiert,
+statt bei unklarem Zustand automatisch erneut abzufragen.
+
+### Eine begrenzte Intervallserie
+
+```bash
+./oracle-node submit --data /pfad/node-b --peer-id NODE_ID_A \
+  --interval-seconds 10 --count 2 --wait true
+```
+
+Dieser Auftrag umfasst zwei getrennte API-Abfragen mit zehn Sekunden
+Abstand zwischen ihren geplanten Startzeiten. `--count` ist auf hoechstens
+32 Ausfuehrungen begrenzt; das Intervall muss mindestens zehn Sekunden
+betragen, die letzte geplante Startzeit darf hoechstens zehn Minuten in
+der Zukunft liegen. Die Optionen werden gemeinsam verwendet. Optional
+kann `--job-spec` eine Ausgangsspezifikation vorgeben.
+
+Jede Ausfuehrung bekommt eine eigene Challenge, eine erhoehte
+Ausfuehrungsnummer und einen eigenen TLSNotary-Beleg. Weitere Challenges
+werden kryptografisch aus der zufaelligen Basis-Challenge und der
+Ausfuehrungsnummer abgeleitet. Derselbe Basisauftrag liefert beim Retry
+dieselben Bindungen und Queue-IDs; es wird nicht neu gewuerfelt.
+Die Serie wird als
+zusammengehoeriger Batch persistent angenommen. Ohne `--wait true` liefert
+Submit `jobs` mit den einzelnen Queue-IDs; Status und Beleg werden pro
+Queue-ID abgefragt. Mit Warteoption liefert die Ausgabe `results` mit den
+geprueften und einmalig angenommenen Einzelergebnissen. Einzeljobs behalten
+ihre bisherige Ausgabe.
+
+Die Queue arbeitet seriell. Eine geplante Startzeit ist eine untere
+Zeitgrenze; Last und vorherige Jobs koennen den tatsaechlichen Start
+verzoegern. Ein verpasstes Ausfuehrungsfenster fuehrt zum Fehler. Dies ist
+eine begrenzte Serie, kein unbegrenztes Dauerabo oder allgemeiner Scheduler.
+
+Der Daemon besitzt die Queue ueber `job-queue.owner`. Nach einem harten
+Absturz kann dieser Marker verbleiben. Den tatsaechlich gestoppten alten
+Prozess und dessen PID pruefen, dann die explizite Wiederherstellung nutzen:
+
+```bash
+./oracle-node queue-recover --data /pfad/node-a --pid ALTE_PROZESS_ID
+```
+
+Keine Marker oder Replay-Listen waehrend laufendem Betrieb loeschen. Die
+CLI kommuniziert mit dem eigenen identitaetsgebundenen Loopback-Broker auf
+`notaryPort + 3`; alle vier internen Ports muessen frei sein und bleiben
+lokal. Dies ist kein oeffentlicher HTTP-Administrationsdienst.
+
 ## Verbindung ueber das Internet
 
 ### Lokale Node hinter einem Router
@@ -227,8 +338,9 @@ Der Bootstrap muss die aktuelle Version mit Unterstuetzung fuer
 `address: null`; Client-Zertifikat und Signatur werden geprueft. Der
 Bootstrap waehlt den Client nicht fuer Rueckverbindungen und gibt ihn
 nicht als dialbaren Peer weiter. Die Peer-Liste kennzeichnet `dialable`
-und `trusted` getrennt. Dieser Modus dient derzeit der Peer-Suche;
-eine Notarberechtigung entsteht dadurch nicht.
+und `trusted` getrennt. Ueber den dauerhaften Mesh-Link sind nach
+ausdruecklicher Zulassung auch Peer-Jobs und Notararbeit in beide
+Richtungen moeglich; eine Notarberechtigung entsteht durch Discovery nicht.
 
 Fuer einen API-Job den oeffentlichen Notar auf dem Client mit `add-seed`
 zulassen. Der Notar kann genau diese ausgehende Client-Identitaet fuer
@@ -267,16 +379,19 @@ authentisch erhalten werden. Bootstrap-Betreiber starten dieselbe Software
 mit `--discovery public`, einer oeffentlich routbaren Adresse und einem
 erreichbaren Listen-Port. Der Peer-Port
 muss vom anderen Rechner erreichbar sein; NAT/Firewall/Portweiterleitung
-werden nicht automatisch konfiguriert. Die drei internen Rust-Ports bleiben
-auf Loopback und werden nicht separat ins Internet gestellt.
+werden nicht automatisch konfiguriert. Die drei internen Rust-Ports und
+der CLI-Broker bleiben auf Loopback und werden nicht ins Internet gestellt.
 
-Es gibt noch kein bereitgestelltes oeffentliches Oracle-Netz oder einen
-mitgelieferten aktiven Bootstrap-Dienst. Mindestens ein bekannter lebender,
+Es gibt noch kein offenes Oracle-Netz mit automatisch vertrauenswuerdigen
+Teilnehmern. Der Kasvio-Testserver dient als bekannter Einstiegspunkt fuer
+ausdruecklich eingerichtete Tests. Mindestens ein bekannter lebender,
 erreichbarer Bootstrap ist fuer die erste Peer-Suche erforderlich. Weitere
 Peers werden durch signierte Beschreibungen bekannt; damit kann das Netz
-nach dem Einstieg weitere Verbindungen aufbauen. Unterschiedliche
-Betreiber, oeffentliche Internet-Peer-Verbindungen und NAT-Verhalten wurden
-mit diesem lokalen Test noch nicht bestaetigt.
+nach dem Einstieg weitere Verbindungen aufbauen. Eine lokale Outbound-Node
+und der externe Kasvio-Server haben Internet-Peerjobs und Notararbeit ueber
+den Rueckkanal erfolgreich ausgefuehrt. Beide gehoeren demselben Betreiber.
+Unabhaengige Betreiber und allgemeine NAT-Verfuegbarkeit wurden damit
+nicht bestaetigt; Details stehen in [TESTERGEBNIS.md](TESTERGEBNIS.md).
 
 `public` nimmt neue Discovery-Verbindungen an, nachdem Zertifikatsidentitaet
 und signierte Peer-Beschreibung geprueft wurden. Vor einem ausgehenden Dial
@@ -358,6 +473,7 @@ node tests/discovery-network.mjs
 node tests/job-security.mjs
 node tests/peer-security.mjs
 node tests/integration.mjs
+node tests/peer-jobs.mjs
 # API-Belege bei eingeschalteter lokaler Peer-Suche:
 ORACLE_TEST_DISCOVERY=local-test node tests/integration.mjs
 ```
@@ -401,9 +517,10 @@ Ein Pruefer muss dem Notar vertrauen, dass er nicht mit dem Abfrager kolludiert.
 Lokale getrennte Prozesse beweisen keine unabhaengigen Betreiber. Der Beleg
 beweist nicht die sachliche Wahrheit eines API-Wertes. Die signierte
 Erfassungszeit ist kein unabhaengiger Zeitstempel. Die Job-Zeitfenster setzen
-eine vertrauenswuerdige Prueferuhr voraus. Die Zeugenwahl ist nur innerhalb
-einer verbindlichen Zulassungsliste reproduzierbar; eigene Listen oder selbst
-erzeugte Jobs koennen beeinflusst werden. Automatische periodische Jobannahme
+eine vertrauenswuerdige Prueferuhr voraus. Die lokale Zufallsauswahl wird
+persistiert, ist aber kein extern nachpruefbarer Zufallsentscheid. Betreiber
+koennen ihre eigene Software und Zulassungen veraendern. Die dauerhafte Queue
+nimmt Einzeljobs und begrenzte Intervallserien an; unbegrenzte Dauerabos
 und eine netzwerkweite Annahmeliste sind noch nicht implementiert.
 
 Die mitgelieferten TLSNotary-Cargo-Manifeste deklarieren MIT/Apache-2.0.

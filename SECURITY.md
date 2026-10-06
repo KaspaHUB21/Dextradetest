@@ -13,15 +13,17 @@ mit dem Abfrager kolludiert. Die Node-Signatur authentifiziert den
 Aussteller und seine Job-Zuordnung. Signaturen beweisen nicht die
 sachliche Wahrheit des API-Wertes oder die Unabhaengigkeit der Betreiber.
 
-Eine Auswahl per Job-Hash aus ausdruecklich zugelassenen Zeugen ist keine
+Eine lokale Zufallsauswahl aus ausdruecklich zugelassenen Zeugen ist keine
 offene, Sybil-resistente Zeugenwahl. Unterschiedliche Schluessel oder
 Container auf demselben Rechner schaffen keine unabhaengigen Betreiber.
 Den erwarteten Node-/Notarschluessel ausserhalb des eingereichten Belegs
 authentisch beziehen. Neu entdeckte Peers sind keine automatisch
 vertrauenswuerdigen Zeugen.
-Die Seed-Liste muss verbindlich vorgegeben sein. Selbst erzeugte Jobs oder
-veraenderte Listen erlauben dem Betreiber Einfluss auf die Auswahl. Bei
-Ausfall des bestimmten Zeugen wird kein Ersatz neu ausgewaehlt.
+Die lokale Wahl wird vor Kontakt fuer die Job-Ausfuehrung persistiert; bei
+Ausfall des bestimmten Zeugen wird kein Ersatz neu ausgewaehlt. Das schuetzt
+einen ehrlich betriebenen Dienst gegen unbeabsichtigtes Neuwuerfeln. Ein
+boesartiger Betreiber kann seine lokale Software, Zulassungen und Listen
+veraendern; die Wahl ist keine extern nachpruefbare Netzwerk-Lotterie.
 
 ## Betriebsgrenzen
 
@@ -66,15 +68,57 @@ Kollusion werden durch Discovery oder signierte Beschreibungen nicht
 grundsaetzlich geloest. Einen Bootstrap als Einstiegspunkt zu nutzen ist
 keine Garantie fuer vollstaendige oder neutrale Peer-Informationen.
 
-Das Repository bleibt privat; es gibt keinen bereitgestellten
-oeffentlichen Bootstrap-Dienst. Fuer Internetbetrieb braucht jede
+Das Repository bleibt privat. Der Kasvio-Testserver ist ein gezielt
+eingerichteter Einstiegspunkt, kein automatisch vertrautes offenes
+Bootstrap-Netz. Fuer Internetbetrieb braucht jede
 erreichbare Node eine routbare beworbene Adresse und zugaenglichen Port.
 NAT-Traversal, automatische Portweiterleitung und Relays fehlen. Nach
 Aenderung des Discovery-Modus oder der Bootstrap-Konfiguration neu starten.
 
 ### Prozess und Daten
 
-- Nur den Peer-Port oeffentlich erreichbar machen. Die drei Rust-Ports
+Peer-Jobs benoetigen eine laufende Node. Der lokale CLI-Broker lauscht nur
+auf Loopback (`notaryPort + 3`) und prueft die eigene TLS-Identitaet.
+Er ist kein oeffentlicher Steuerungsport. Die dauerhaften mTLS-Mesh-Links
+erlauben beidseitige Streams ueber eine ausgehende Verbindung; sie ersetzen
+keine Egress-Firewall oder allgemeine NAT-/Relay-Infrastruktur.
+
+`trust-peer` laesst einen bereits authentifizierten bekannten Peer
+ausdruecklich als Notar zu. Das kann auch eine Node ohne beworbene Adresse
+sein; dann ist der Mesh-Link erforderlich. Peer-Discovery macht diese
+Vertrauensentscheidung nicht selbst. Zugelassene Seeds und Client-IDs
+duerfen Jobs einreichen; der Status und Ergebnisdownload werden an die
+urspruengliche authentifizierte Auftraggeberidentitaet gebunden.
+
+`submit` persistiert den erwarteten Job lokal; `job-result` prueft Beleg,
+Worker und Notar gegen diese lokale Vorgabe und die Identitaetspins.
+Den lokalen `submitted-jobs/`-Zustand und die Annahmeliste vor Aenderung und
+Verlust schuetzen. Ein erneuter Submit derselben Ausfuehrung ist idempotent;
+eine erneute Live-Annahme desselben Belegs ist nicht erlaubt.
+
+Die dauerhafte Queue ist auf 1000 Datensaetze und 32 aktive/wartende Jobs
+begrenzt und fuehrt Jobs seriell aus. Laufende Jobs werden nach einem
+unklaren Neustart fehlgeschlagen markiert und nicht automatisch wiederholt.
+Ein Queue-Owner-Marker bleibt nach hartem Absturz bestehen. `queue-recover`
+verlangt die genaue alte Prozess-ID und verweigert Recovery fuer einen
+noch existierenden Prozess; PID-Wiederverwendung fuehrt zum sicheren
+Abbruch und braucht manuelle Untersuchung. Keine automatischen
+Marker-Loeschungen aufgrund von Alter oder Zeitstempeln.
+
+Intervallserien werden als begrenzter persistenter Batch angenommen und
+verwenden dieselbe Auftraggeber-Zugriffskontrolle wie Einzeljobs. Maximal
+32 Ausfuehrungen, mindestens zehn Sekunden Intervall und eine letzte
+Startzeit hoechstens zehn Minuten in der Zukunft begrenzen den Auftrag.
+Jede Ausfuehrung bindet ihren eigenen Job-Hash mit eigener Challenge an die
+authentifizierte API-Anfrage. Weitere Challenges werden aus der Basisnonce
+und der Ausfuehrungsnummer abgeleitet; derselbe Basisauftrag erzeugt beim
+Retry dieselben Bindungen, statt neue Ausfuehrungen oder Nonces zu erzeugen.
+Belege werden einzeln verifiziert und
+angenommen; ein gueltiger Beleg ersetzt keine spaetere Ausfuehrung. Die
+Node garantiert keine exakten Startzeiten unter Last und kein Dauerabo.
+
+- Nur den Peer-Port oeffentlich erreichbar machen. Die drei Rust-Ports und
+  der lokale CLI-Broker
   bleiben auf Loopback. Kein direkter Notardienst fuer unbekannte Clients.
 - Privaten Node-/Notarschluessel und TLS-Schluessel nur im privaten
   Datenverzeichnis speichern. Unter Linux Modus 0700 fuer Verzeichnisse,
@@ -127,3 +171,20 @@ Protokoll-Fuzzing, Langzeittests, unabhaengige Codepruefung, realistische
 Angreifer-/Kollusionsmodelle und betriebliche Alarmierung. Job-Aktualitaet
 setzt eine passende Verifikationsregel und vertrauenswuerdige Uhr voraus;
 eine signierte lokale Uhrzeit ist kein unabhaengiger Zeitstempel.
+
+Die zusaetzlichen Live-Tests zwischen Kasvio-Server und lokaler
+Outbound-Node bestaetigen Internet-Verbindung, Rueckkanal-Notararbeit und
+delegierte Peerjobs fuer diese konkrete Konfiguration. Beide Systeme
+werden vom selben Betreiber kontrolliert. Die Tests sind daher kein
+Beleg fuer unabhaengige Zeugen, Kollusionsresistenz, beliebige NAT-Umgebungen
+oder dauerhafte Verfuegbarkeit.
+# Zusaetzliche Grenzen der Mesh-Integration
+
+Neben den Grenzen je Verbindung werden hoechstens 128 eingehende
+virtuelle Streams gleichzeitig bearbeitet. Ausgehende TLS-Verbindungen
+werden auch nach DNS-Aufloesung erneut gegen die Grenze von 32 geprueft.
+Veraltete unbekannte Peers verlieren ihren offenen Link beim Entfernen
+aus der Peer-Liste. Die lokale Vermittlung lauscht nur auf Loopback und
+verlangt den eigenen Node-Schluessel. Startfehler schliessen bestehende
+Sockets und native Prozesse; die Queue wird erst nach erfolgreichem
+Start beider Listener geoeffnet.
