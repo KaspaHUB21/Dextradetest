@@ -1,4 +1,4 @@
-bin/
+/bin/
 tlsn-engine/target/
 node-data/
 node-a/

@@ -16,6 +16,9 @@ done
 node -e 'if (Number(process.versions.node.split(".")[0]) < 22) { console.error("Node.js 22+ required"); process.exit(1); }'
 openssl version >/dev/null
 [[ -f tlsn-engine/Cargo.lock && -f vendor/tlsn/Cargo.toml ]] || { echo 'Missing locked dependencies or TLSNotary vendor source.' >&2; exit 1; }
+for executable in notary prove present verify; do
+  [[ -f "tlsn-engine/src/bin/$executable.rs" ]] || { echo "Missing engine source: $executable" >&2; exit 1; }
+done
 [[ ! -L bin ]] || { echo 'Refusing symlinked bin directory.' >&2; exit 1; }
 for executable in notary prove present verify; do
   if [[ -e "bin/$executable" || -L "bin/$executable" ]]; then
