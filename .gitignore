@@ -1,0 +1,14 @@
+bin/
+tlsn-engine/target/
+node-data/
+node-a/
+node-b/
+tests/results/
+*.log
+*.key
+*.secrets.tlsn
+.tools/
+.install-stage.*/
+!vendor/tlsn/crates/**/test-ca/**/*.key
+!vendor/tlsn/crates/**/server-fixture/src/*.key
+!vendor/tlsn/crates/server-fixture/certs/src/tls/*.key

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+if [[ -x $root/.tools/node/bin/node ]]; then
+  node_binary="$root/.tools/node/bin/node"
+else
+  node_binary=$(command -v node)
+fi
+exec "$node_binary" "$root/oracle-node.mjs" "$@"
