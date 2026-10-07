@@ -12,6 +12,7 @@ import { discoveryTarget, isDiscoveryAddressAllowed } from './discovery-address.
 import { createMeshLink } from './mesh-link.mjs';
 import { createJobQueue, recoverQueueOwner } from './job-queue.mjs';
 import { selectWitnessOnce } from './witness-selection.mjs';
+import { DEFAULT_BOOTSTRAP, initialBootstraps, pinAcceptsAddress } from './network-defaults.mjs';
 const run = promisify(execFile);
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const BIN = process.env.ORACLE_ENGINE_DIR || join(ROOT, 'bin');
@@ -95,8 +96,8 @@ function line(socket) {
 }
 function authorizeOutbound(peer, request, cfg) {
   const approved = cfg.seeds.find(seed => seed.id === peer.id && seed.address === peer.address);
-  const pin = discoveryPins(cfg).find(seed => seed.id === peer.id);
-  if (pin && pin.address !== peer.address) throw new Error('Discovery cannot redirect pinned peer');
+  const identityPins = discoveryPins(cfg).filter(seed => seed.id === peer.id);
+  if (identityPins.length && !identityPins.some(pin => pinAcceptsAddress(pin, peer.address))) throw new Error('Discovery cannot redirect pinned peer');
   const discoveryOnly = !approved && ['hello', 'link'].includes(request.op) && discoveryMode(cfg) !== 'closed';
   if (!approved && !discoveryOnly) throw new Error('Outbound peer is not explicitly approved');
   return discoveryOnly;
@@ -162,14 +163,17 @@ async function request(peer, body) {
 }
 async function init() {
   if (existsSync(join(DATA, 'config.json')) || existsSync(join(DATA, 'identity.key'))) throw new Error('Node already exists; identity will not be overwritten');
-  const outboundFlag = option('outbound-only', 'false');
+  const outboundFlag = option('outbound-only', option('address') ? 'false' : 'true');
   if (!['true', 'false'].includes(outboundFlag)) throw new Error('Outbound-only must be true or false');
   const outboundOnly = outboundFlag === 'true';
   if (outboundOnly && option('address')) throw new Error('Outbound-only nodes do not advertise an address');
   const advertised = outboundOnly ? null : option('address', '127.0.0.1:9443');
   if (advertised !== null) address(advertised);
   const listen = option('listen', advertised || '127.0.0.1:9443'); address(listen);
-  const discovery = discoveryMode({ discovery: option('discovery', 'closed') });
+  // Explicit loopback setups retain their isolated default. Normal installations
+  // use public discovery and can join through an outbound link behind NAT.
+  const localAddress = advertised !== null && isDiscoveryAddressAllowed(address(advertised).host, 'local-test');
+  const discovery = discoveryMode({ discovery: option('discovery', localAddress ? 'closed' : 'public') });
   if (outboundOnly) await discoveryTarget(listen, 'local-test');
   if (!outboundOnly && discovery !== 'closed') await discoveryTarget(advertised, discovery);
   if (discovery === 'local-test') await discoveryTarget(listen, discovery);
@@ -186,7 +190,7 @@ async function init() {
   const descriptor = { version: 1, id, address: advertised, ...(outboundOnly ? { outboundOnly: true } : {}), publicKey, notaryPublicKey: readFileSync(join(DATA, 'notary.pub'), 'utf8').trim() };
   const bytes = Buffer.from(JSON.stringify(descriptor));
   writeJson(join(DATA, 'descriptor.json'), { payload: bytes.toString('base64'), signature: sign(null, Buffer.concat([DOMAIN, bytes]), createPrivateKey(privatePem)).toString('base64') });
-  writeJson(join(DATA, 'config.json'), { version: 1, id, listen, address: advertised, outboundOnly, notaryPort: base, seeds: [], bootstraps: [], discovery });
+  writeJson(join(DATA, 'config.json'), { version: 1, id, listen, address: advertised, outboundOnly, notaryPort: base, seeds: [], bootstraps: initialBootstraps(discovery, id), discovery });
   console.log(JSON.stringify({ id, address: advertised, data: DATA }));
 }
 function addSeed() {
@@ -194,7 +198,7 @@ function addSeed() {
   address(peer.address);
   if (!/^[a-f0-9]{64}$/.test(peer.id) || peer.id === cfg.id) throw new Error('Invalid other node ID');
   if ((cfg.clients || []).includes(peer.id)) throw new Error('Identity is already an outbound-only client');
-  if ((cfg.bootstraps || []).some(p => p.id === peer.id && p.address !== peer.address)) throw new Error('Conflicting bootstrap address');
+  if ((cfg.bootstraps || []).some(p => p.id === peer.id && !pinAcceptsAddress(p, peer.address))) throw new Error('Conflicting bootstrap address');
   if (!cfg.seeds.some(p => p.id === peer.id) && cfg.seeds.length >= 32) throw new Error('Pinned peer limit reached; remove a seed explicitly');
   cfg.seeds = [...cfg.seeds.filter(p => p.id !== peer.id), peer];
   writeJson(join(DATA, 'config.json'), cfg); console.log('Seed saved; this identity is explicitly trusted for the prototype.');
@@ -227,9 +231,10 @@ function allowClient(remove = false) {
 }
 async function addBootstrap() {
   const cfg = config(); const peer = { address: option('address'), id: option('id') };
+  if (peer.id === DEFAULT_BOOTSTRAP.id && peer.address === DEFAULT_BOOTSTRAP.address) peer.descriptorAddress = DEFAULT_BOOTSTRAP.descriptorAddress;
   if (!/^[a-f0-9]{64}$/.test(peer.id) || peer.id === cfg.id) throw new Error('Invalid bootstrap identity');
   await discoveryTarget(peer.address, discoveryMode(cfg) === 'local-test' ? 'local-test' : 'public');
-  if (cfg.seeds.some(p => p.id === peer.id && p.address !== peer.address)) throw new Error('Conflicting trusted peer address');
+  if (cfg.seeds.some(p => p.id === peer.id && !pinAcceptsAddress(peer, p.address))) throw new Error('Conflicting trusted peer address');
   const old = cfg.bootstraps || [];
   if (!old.some(p => p.id === peer.id) && old.length >= 8) throw new Error('Bootstrap limit reached');
   cfg.bootstraps = [...old.filter(p => p.id !== peer.id), peer]; writeJson(join(DATA, 'config.json'), cfg);
@@ -313,7 +318,7 @@ async function start() {
   }
   async function remember(envelope, online = false) {
     const desc = validateDescriptor(envelope); const pin = pins.get(desc.id);
-    if (desc.id === cfg.id || (pin && pin.address !== desc.address)) return false;
+    if (desc.id === cfg.id || (pin && !pinAcceptsAddress(pin, desc.address))) return false;
     if (!approved.has(desc.id)) {
       if (mode === 'closed' && !clients.has(desc.id)) return false;
       if (clients.has(desc.id) && !desc.outboundOnly) return false;
@@ -433,7 +438,7 @@ async function start() {
       const msg = await line(socket);
       if (!msg || typeof msg !== 'object' || Array.isArray(msg)) throw new Error('Invalid peer request');
       const desc = validateDescriptor(msg.descriptor);
-      if (desc.id !== id || (pins.has(id) && desc.address !== pins.get(id).address)) throw new Error('Descriptor does not match pinned peer');
+      if (desc.id !== id || (pins.has(id) && !pinAcceptsAddress(pins.get(id), desc.address))) throw new Error('Descriptor does not match pinned peer');
       if (!approved.has(id) && !clients.has(id) && !['hello', 'link'].includes(msg.op)) throw new Error('Peer identity not approved for jobs or notary sessions');
       // Inbound TLS proves possession of a key, not reachability of its advertised address.
       if (!await remember(msg.descriptor, approved.has(id) || desc.outboundOnly === true)) throw new Error('Peer discovery admission rejected');
@@ -562,13 +567,13 @@ async function start() {
             if (cfg.outboundOnly || !peer.outboundOnly && cfg.id < peer.id || (cfg.bootstraps || []).some(p => p.id === peer.id)) {
               const opened = await directConnect(peer, { op: 'link' });
               const desc = validateDescriptor(opened.response.descriptor);
-              if (desc.id !== peer.id || desc.address !== peer.address) { opened.socket.destroy(); throw new Error('Mesh descriptor mismatch'); }
+              if (desc.id !== peer.id || !(pins.get(peer.id)?.descriptorAddress ? pinAcceptsAddress(pins.get(peer.id), desc.address) : desc.address === peer.address)) { opened.socket.destroy(); throw new Error('Mesh descriptor mismatch'); }
               attachLink(peer.id, opened.socket, true);
             }
           }
           const response = await request(peer, { op: 'hello' });
           const desc = validateDescriptor(response.descriptor);
-          if (desc.id !== peer.id || desc.address !== peer.address) throw new Error('Unexpected peer descriptor');
+          if (desc.id !== peer.id || !(pins.get(peer.id)?.descriptorAddress ? pinAcceptsAddress(pins.get(peer.id), desc.address) : desc.address === peer.address)) throw new Error('Unexpected peer descriptor');
           if (!await remember(response.descriptor, true)) throw new Error('Peer admission rejected');
           peers.get(peer.id).notaryReady = response.notaryReady === true;
           writeJson(join(DATA, 'peers.json'), [...peers.values()]);

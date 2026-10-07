@@ -58,7 +58,9 @@ export function isDiscoveryAddressAllowed(ip, mode = 'public') {
 }
 export function checkedDiscoveryRecords(records) {
   if (!Array.isArray(records) || !records.length || records.length > 16 || records.some(record => !record || !isDiscoveryAddressAllowed(record.address, 'public'))) throw new Error('Discovery hostname resolves to a disallowed address');
-  return records[0].address;
+  // Prefer IPv4 when both exist: the initial bootstrap currently listens on IPv4.
+  // Every record is still validated above, including the unused IPv6 records.
+  return (records.find(record => isIP(record.address) === 4) || records[0]).address;
 }
 
 // Discovery never dials a hostname after checking DNS; return a checked numeric address.

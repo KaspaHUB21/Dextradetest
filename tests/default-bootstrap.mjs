@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import { DEFAULT_BOOTSTRAP, initialBootstraps, pinAcceptsAddress } from '../network-defaults.mjs';
+assert.deepEqual(initialBootstraps('public', 'different-node'), [DEFAULT_BOOTSTRAP]);
+assert.deepEqual(initialBootstraps('public', DEFAULT_BOOTSTRAP.id), []);
+assert.deepEqual(initialBootstraps('closed', 'different-node'), []);
+assert.deepEqual(initialBootstraps('local-test', 'different-node'), []);
+const pins = initialBootstraps('public', 'different-node');
+pins[0].address = 'changed';
+assert.equal(DEFAULT_BOOTSTRAP.address, 'kasvio.network:9443');
+assert.match(DEFAULT_BOOTSTRAP.id, /^[a-f0-9]{64}$/);
+assert.ok(pinAcceptsAddress(DEFAULT_BOOTSTRAP, '152.53.92.135:9443'));
+assert.ok(pinAcceptsAddress(DEFAULT_BOOTSTRAP, 'kasvio.network:9443'));
+assert.equal(pinAcceptsAddress(DEFAULT_BOOTSTRAP, '8.8.8.8:9443'), false);
+assert.equal(pinAcceptsAddress({ address: 'kasvio.network:9443' }, '152.53.92.135:9443'), false);
+console.log('Default discovery pin and isolated modes: passed');

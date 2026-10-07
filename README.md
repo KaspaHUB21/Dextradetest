@@ -11,12 +11,23 @@ oder TLSNotary-Zeuge arbeiten. Keine Kaspa-Anbindung in diesem Prototyp.
   der SHA-256-Fingerabdruck des oeffentlichen Identitaetsschluessels geprueft.
 - Signierte Peer-Beschreibungen binden Node-ID, Adresse und den separaten
   secp256k1-Notarschluessel aneinander.
-- Drei Discovery-Modi: `closed` als Standard fuer vorab zugelassene Peers,
+- Drei Discovery-Modi: `closed` fuer vorab zugelassene Peers,
   `public` fuer signierte Teilnehmerbeschreibungen ueber oeffentlich
   routbare Adressen und `local-test` fuer numerische Loopback-Adressen.
   Ein bekannter Bootstrap mit authentisch erhaltener Node-ID vermittelt
   weitere erreichbare Peers. Die Node prueft Verbindungen und verbindet
   sich mit begrenzter Parallelitaet erneut.
+- Neue Installationen nutzen standardmaessig `public` und den eingebauten
+  Bootstrap `kasvio.network:9443` mit fest gepinnter Node-ID
+  `bc1886af011f62966d09dce0441216b83078e55258fd68e5f83510ba0e516188`.
+  Ohne `--address` ist die Node ausgehend verbunden und braucht keine
+  Portfreigabe. Explizite Loopback-Adressen behalten den Modus `closed`;
+  `--discovery closed` oder `--discovery local-test` deaktiviert den Anker.
+  Bestehende Datenverzeichnisse werden durch ein Update nicht umkonfiguriert.
+  Der Server bewirbt derzeit `152.53.92.135:9443`; ausschliesslich dieser
+  feste Adressalias ist fuer den gepinnten Domain-Anker zusaetzlich erlaubt.
+  Der einzelne Bootstrap muss erreichbar sein; weitere Anker koennen mit
+  `add-bootstrap` hinzugefuegt werden. Ein anderer Schluessel wird abgewiesen.
 - Discovery-Bootstraps und zugelassene Zeugen sind getrennt: `add-bootstrap`
   erlaubt Peer-Suche, `add-seed` erlaubt Zusammenarbeit bei TLSNotary-Jobs.
   Ein entdeckter Peer wird dadurch nicht automatisch zum Zeugen.
@@ -51,10 +62,7 @@ oder TLSNotary-Zeuge arbeiten. Keine Kaspa-Anbindung in diesem Prototyp.
 
 ### Einfacher Start unter Ubuntu 24.04
 
-Das private Repository klonen oder nach Anmeldung bei GitHub dessen ZIP
-herunterladen und entpacken. Fuer Git ueber HTTPS einen eingerichteten
-Credential-Manager verwenden oder bei der Passwortabfrage einen GitHub-Token
-mit Repository-Leserechten eingeben. Tokens niemals in die Clone-URL schreiben.
+Das oeffentliche Repository klonen oder dessen ZIP herunterladen und entpacken.
 
 ```bash
 git clone https://github.com/KaspaHUB21/Dextradetest.git
@@ -76,12 +84,27 @@ Danach kann statt `node oracle-node.mjs` immer `./oracle-node` benutzt werden:
 
 ```bash
 umask 077
-./oracle-node init --data "$HOME/oracle-node-data" \
-  --address 127.0.0.1:19443 --notary-port 19047
+./oracle-node init --data "$HOME/oracle-node-data"
 ./oracle-node start --data "$HOME/oracle-node-data"
 ```
 
 Eine API-Abfrage braucht weiterhin einen zweiten vorab zugelassenen Peer.
+Die Verbindung zum Discovery-Anker und weitere Peer-Suche starten automatisch.
+Fuer einen oeffentlich erreichbaren Peer bei `init` zusaetzlich
+`--address HOST:9443 --listen 0.0.0.0:9443` angeben und den Port freigeben.
+Bestehende Installationen koennen den Anker ohne Schluesselwechsel aktivieren:
+
+```bash
+./oracle-node add-bootstrap --data /pfad/node-data --address kasvio.network:9443 \
+  --id bc1886af011f62966d09dce0441216b83078e55258fd68e5f83510ba0e516188
+./oracle-node discovery --data /pfad/node-data --mode public
+# Danach den laufenden Node-Dienst neu starten.
+```
+
+Oeffentliche Discovery setzt eine ausgehende Node oder eine oeffentlich
+beworbene Adresse voraus; eine beworbene Loopback-Adresse ist nicht geeignet.
+Tests: `node tests/default-bootstrap.mjs`; mit gebauten Engines und Internet
+zusaetzlich `node tests/public-bootstrap.mjs` (frische temporaere Identitaet).
 Die folgenden Abschnitte beschreiben den Austausch der IDs und beide Rollen.
 Fuer Updates: beide Dienste stoppen, den gewuenschten Quellstand herunterladen
 und `bash setup.sh --replace-binaries` ausfuehren. Private Daten ausserhalb des
@@ -469,6 +492,7 @@ Discovery ist ein Netzwerktest; sie belegt keine unabhaengigen Betreiber.
 
 ```bash
 node tests/discovery-address.mjs
+node tests/default-bootstrap.mjs
 node tests/discovery-network.mjs
 node tests/job-security.mjs
 node tests/peer-security.mjs

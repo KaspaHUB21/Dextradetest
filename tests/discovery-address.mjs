@@ -15,6 +15,7 @@ for (const ip of denied) assert.equal(isDiscoveryAddressAllowed(ip), false, ip);
 const allowed = ['1.1.1.1', '8.8.8.8', '100.63.255.255', '100.128.0.1', '172.15.255.255', '172.32.0.1', '192.31.196.1', '198.17.255.255', '198.20.0.1', '223.255.255.255', '2606:4700:4700::1111', '2001:4860:4860::8888', '2001:200::1', '::ffff:8.8.8.8', '::ffff:808:808'];
 for (const ip of allowed) assert.equal(isDiscoveryAddressAllowed(ip), true, ip);
 assert.equal(checkedDiscoveryRecords([{ address: '8.8.8.8' }, { address: '2606:4700:4700::1111' }]), '8.8.8.8');
+assert.equal(checkedDiscoveryRecords([{ address: '2606:4700:4700::1111' }, { address: '8.8.8.8' }]), '8.8.8.8');
 for (const records of [[], null, [{ address: '8.8.8.8' }, { address: '127.0.0.1' }], [{ address: '8.8.8.8' }, { address: '::ffff:10.0.0.1' }], Array(17).fill({ address: '8.8.8.8' }), [null], [{ address: 'invalid' }]]) assert.throws(() => checkedDiscoveryRecords(records));
 for (const ip of ['127.0.0.1', '127.42.0.2', '::1', '::ffff:127.0.0.1']) assert.equal(isDiscoveryAddressAllowed(ip, 'local-test'), true, ip);
 for (const ip of ['10.0.0.1', '192.168.0.1', '8.8.8.8', 'fe80::1', 'fc00::1']) assert.equal(isDiscoveryAddressAllowed(ip, 'local-test'), false, ip);
