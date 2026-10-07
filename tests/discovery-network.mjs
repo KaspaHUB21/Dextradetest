@@ -108,7 +108,7 @@ try {
   await cli('add-bootstrap', '--data', c.data, '--address', a.address, '--id', a.id);
   assert.equal(read(join(a.data, 'config.json')).seeds.length, 0);
   for (const node of nodes) assert.equal(read(join(node.data, 'config.json')).seeds.length, 0);
-  let processA = await start(a.data); await start(b.data); await start(c.data);
+  let processA = await start(a.data); let processB = await start(b.data); await start(c.data);
   await waitPeers([{ data:b.data,id:a.id }, {data:c.data,id:a.id}, {data:b.data,id:c.id}, {data:c.data,id:b.id}]);
   report.checks.push('B and C independently bootstrap from A and authenticate each other through transitive discovery');
   console.log('PASS: three nodes discover and authenticate peers without reciprocal notarizer pins');
@@ -128,6 +128,24 @@ try {
   assert.equal(invalidClient.ok,false,'outbound-only declaration cannot advertise a private target');
   report.checks.push('Outbound-only client without public listener authenticates bootstrap; cannot reserve, advertise a private target, or enter dialable gossip');
   console.log('PASS: outbound-only client connects safely without a public address');
+  const secondData = join(resultDir, 'node-outbound-second');
+  const second = JSON.parse(await cli('init', '--data', secondData, '--outbound-only', 'true', '--listen', '127.0.0.1:31443', '--notary-port', '31047', '--discovery', 'local-test'));
+  await cli('add-bootstrap', '--data', secondData, '--address', a.address, '--id', a.id);
+  await start(secondData);
+  await waitPeers([{data:clientData,id:second.id},{data:secondData,id:client.id}]);
+  for (const [data, id] of [[clientData, second.id], [secondData, client.id]]) {
+    const remote = read(join(data, 'peers.json')).find(p => p.id === id);
+    assert.equal(remote.confirmed, true, 'relayed peer identity authenticated end-to-end');
+    assert.equal(remote.address, null, 'relay does not fabricate dialable addresses');
+    assert.equal(remote.trusted, false, 'relay does not grant witness trust');
+  }
+  report.checks.push('Two outbound-only peers discover each other and authenticate end-to-end over bounded opaque bootstrap relay');
+  console.log('PASS: outbound-only peers discover and connect through end-to-end authenticated relay');
+  for (const bad of [{op:'relay',targetId:'0'.repeat(64)},{op:'relay',targetId:a.id},{op:'relay-deliver'}]) {
+    const answer = await exchange(clientData, a, bad);
+    assert.equal(answer.ok, false, 'direct sockets cannot deliver or request relay tunnels');
+  }
+  report.checks.push('Relay requests over non-mesh transports and arbitrary/self relay targets rejected');
   for (const node of [b,c]) {
     for (const peer of read(join(node.data, 'peers.json'))) assert.notEqual(peer.trusted, true, 'discovery cannot grant notary trust');
   }
@@ -164,6 +182,10 @@ try {
   assert.equal((await exchange(clientData,a,{op:'reserve'})).ok,false,'removed client denied after restart');
   report.checks.push('Explicit client authorization permits reservation and release without witness trust; removal revokes it after restart');
   console.log('PASS: explicit outbound client authorization and revocation');
+  await stop(processA); await stop(processB); processB = await start(b.data);
+  await waitPeers([{data:b.data,id:c.id},{data:c.data,id:b.id}]);
+  report.checks.push('A restarted node reconnects to cached authenticated peers with the bootstrap offline');
+  console.log('PASS: peer cache enables restart connectivity while bootstrap is offline');
   for (const node of nodes) assert.equal(read(join(node.data, 'config.json')).seeds.length, 0);
   report.success = true;
 } catch (error) {

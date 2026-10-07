@@ -10,5 +10,7 @@ export function initialBootstraps(discovery, nodeId) {
   return discovery === 'public' && nodeId !== DEFAULT_BOOTSTRAP.id ? [{ ...DEFAULT_BOOTSTRAP }] : [];
 }
 export function pinAcceptsAddress(pin, value) {
-  return pin.address === value || pin.descriptorAddress === value;
+  // Signed witness rosters pin identity/key only. Public address checks still
+  // apply before dialing; absent address never permits an unchecked target.
+  return pin.address === undefined || pin.address === value || pin.descriptorAddress === value;
 }

@@ -4,6 +4,11 @@ Zwei identische Installationen koennen sich gegenseitig finden, eine
 verschluesselte Peer-Verbindung aufbauen und abwechselnd als API-Abfrager
 oder TLSNotary-Zeuge arbeiten. Keine Kaspa-Anbindung in diesem Prototyp.
 
+Aktueller Funktions- und Testumfang: [Abschlussbericht](COMPLETION-REPORT.md).
+Transportgrenzen: [Netzwerk](NETWORK.md). Vertrauensannahmen:
+[Sicherheitsmodell](SECURITY.md). Das ist ein getesteter Prototyp mit
+zugelassenen Notaren, keine Garantie absoluter Sicherheit.
+
 ## Was implementiert ist
 
 - Dauerhafte Ed25519-Node-Identitaet und selbst ausgestelltes TLS-Zertifikat.
@@ -31,13 +36,24 @@ oder TLSNotary-Zeuge arbeiten. Keine Kaspa-Anbindung in diesem Prototyp.
 - Discovery-Bootstraps und zugelassene Zeugen sind getrennt: `add-bootstrap`
   erlaubt Peer-Suche, `add-seed` erlaubt Zusammenarbeit bei TLSNotary-Jobs.
   Ein entdeckter Peer wird dadurch nicht automatisch zum Zeugen.
+- Der neue oeffentliche Standard aktiviert einen bekannten, exakt gepinnten
+  ersten Notar (Node-ID UND Notarschluessel), oeffentliche begrenzte
+  Job-Annahme und Notarsitzungen. Das ist eine explizite mitgelieferte
+  Vertrauensliste, kein Vertrauen in beliebige entdeckte Identitaeten.
+  Weitere Notare kommen durch Betreiber-Pins oder zeitlich begrenzte,
+  mehrfach signierte Notarlisten hinzu. Widerruf und Ablauf gelten auch
+  fuer laufende Dienste und werden vor Ergebnisannahme erneut geprueft.
 - API-Jobs waehlen kryptografisch zufaellig einen erreichbaren explizit
   zugelassenen Zeugen. Die Wahl wird vor Kontakt dauerhaft fuer den Job
   gespeichert; ist dieser Zeuge spaeter nicht erreichbar, scheitert der Job.
   Es wird nicht erneut gewuerfelt. Lokaler Zufall ist keine netzwerkweit
   nachpruefbare oder Sybil-resistente Auswahl.
   Entdeckte Identitaeten werden nicht automatisch zu vertrauenswuerdigen Notaren.
-- Der Zeuge leitet nur zu `api.kucoin.com:443` weiter. MPC-, Kontroll- und
+- API-Jobs v2 unterstuetzen oeffentliche HTTPS-GET-JSON-Endpunkte auf Port443.
+  Alle DNS-Adressen werden auf private/reservierte Ziele geprueft; gewaehlt
+  wird anschliessend eine gepruefte numerische Adresse. POST, Zugangsdaten,
+  eigene Header, Redirects und Antworten ueber 16KiB werden nicht unterstuetzt.
+  MPC-, Kontroll- und
   Weiterleitungskanal laufen innerhalb der authentifizierten Peer-Verbindung.
   Eine zeitlich begrenzte Reservierung bindet alle drei Kanaele an denselben
   Peer und verhindert eine parallele Vermischung von Jobs.
@@ -55,6 +71,12 @@ oder TLSNotary-Zeuge arbeiten. Keine Kaspa-Anbindung in diesem Prototyp.
   Kontrollnachrichten und Kanaele in beide Richtungen. Eine Node ohne
   beworbene oeffentliche Adresse kann ueber ihren ausgehenden Link auch
   explizit als Zeuge zugelassen werden.
+- Ausgehende Nodes hinter NAT lernen einander ueber signierte Beschreibungen
+  und verbinden sich ueber einen begrenzten Vermittlungsweg mit innerem
+  gegenseitigem TLS1.3. Der Vermittler erhaelt keinen Klartext und kann
+  keine andere Node-Identitaet vortaeuschen. Mehrere Einstiegspunkte sind
+  konfigurierbar; das Standardnetz hat noch keinen DHT oder beliebige
+  Mehrsprung-Routen und seine Ressourcenlimits sind endlich.
 - Peer-Jobs: `submit`, `job-status` und `job-result` uebertragen einen Auftrag,
   verfolgen dessen dauerhaften Zustand und importieren den geprueften Beleg.
 
@@ -88,16 +110,18 @@ umask 077
 ./oracle-node start --data "$HOME/oracle-node-data"
 ```
 
-Eine API-Abfrage braucht weiterhin einen zweiten vorab zugelassenen Peer.
+Eine API-Abfrage braucht einen anderen zugelassenen Notar. Im neuen
+oeffentlichen Profil ist der bekannte erste Notar bereits enthalten.
+Er muss laufen und die aktuelle Node-Version verwenden. Als Job-Worker
+braucht dieser erste Notar selbst einen anderen zugelassenen Notar.
 Die Verbindung zum Discovery-Anker und weitere Peer-Suche starten automatisch.
 Fuer einen oeffentlich erreichbaren Peer bei `init` zusaetzlich
 `--address HOST:9443 --listen 0.0.0.0:9443` angeben und den Port freigeben.
-Bestehende Installationen koennen den Anker ohne Schluesselwechsel aktivieren:
+Bestehende Installationen koennen das neue Profil ohne Schluesselwechsel
+aktivieren. Zuerst Quellstand und Engines aktualisieren, dann:
 
 ```bash
-./oracle-node add-bootstrap --data /pfad/node-data --address kasvio.network:9443 \
-  --id bc1886af011f62966d09dce0441216b83078e55258fd68e5f83510ba0e516188
-./oracle-node discovery --data /pfad/node-data --mode public
+./oracle-node network-enable --data /pfad/node-data
 # Danach den laufenden Node-Dienst neu starten.
 ```
 
@@ -105,6 +129,55 @@ Oeffentliche Discovery setzt eine ausgehende Node oder eine oeffentlich
 beworbene Adresse voraus; eine beworbene Loopback-Adresse ist nicht geeignet.
 Tests: `node tests/default-bootstrap.mjs`; mit gebauten Engines und Internet
 zusaetzlich `node tests/public-bootstrap.mjs` (frische temporaere Identitaet).
+
+### Einen API-Job erzeugen, ausfuehren und sehen
+
+Vorlagen unter [templates](templates/README.md) enthalten Beispiele fuer
+KuCoin BTC und Coinbase BTC sowie das Schema. `job-create` ersetzt die
+Beispielkennung, Challenge und Zeitfenster durch einen frischen Auftrag:
+
+```bash
+./oracle-node status --data "$HOME/oracle-node-data"
+./oracle-node job-create --template templates/kucoin-btc.job.json --out "$HOME/btc-job.json"
+./oracle-node fetch --data "$HOME/oracle-node-data" --job-spec "$HOME/btc-job.json"
+```
+
+Die Ausgabe enthaelt `verified`, `values` und den gespeicherten Belegordner
+`job`. `status` trennt beobachtete Peers, aktuelle Verbindungen und
+zugelassene bereitstehende Notare. Fuer einen anderen frisch authentifizierten
+Worker aus dieser Liste:
+
+```bash
+./oracle-node submit --data "$HOME/oracle-node-data" --peer-id WORKER_NODE_ID \
+  --job-spec "$HOME/btc-job.json" --wait true
+```
+
+Die Antwort wird erst nach unabhängiger Pruefung des kompletten TLSNotary-
+Belegs und der zugelassenen Notaridentitaet angenommen. Oeffentliche neue
+Auftraege sind auf vier pro Minute insgesamt und zwei pro Identitaet begrenzt;
+Serien brauchen eine explizite Freigabe. Ein Peer wird dadurch nicht zum Notar.
+`network-enable --public-jobs false --public-notary false --witness-trust pinned`
+deaktiviert diese Dienste und die mitgelieferte Notarfreigabe (Dienst neu starten).
+
+### Erweiterbare Notarliste
+
+Ein Betreiber kann einen frisch authentifizierten Peer mit `trust-peer`
+freigeben. Fuer gemeinsame Listen liest `policy-configure` eine lokal
+vertraute Autoritaetsdatei `{ "authorities": ["PEM...", "PEM..."], "threshold": 2 }`
+und eine von diesen Schluesseln ausreichend signierte Policy:
+
+```bash
+./oracle-node policy-configure --data "$HOME/oracle-node-data" \
+  --trust-file authority-trust.json --policy-file signed-witness-policy.json
+```
+
+Signaturformat und Hilfsfunktionen stehen in `witness-policy.mjs`,
+ein vollstaendiges Zwei-Autoritaeten-Beispiel in `tests/witness-policy.mjs`.
+Autoritaets-Pins muessen unabhaengig abgestimmt werden. Die Node erzeugt
+keine angeblich unabhaengigen Autoritaeten automatisch. Neue gueltig signierte
+Listen koennen dieselben lokalen Pins verwenden; alte Sequenzen, widerspruechliche
+Listen derselben Sequenz und abgelaufene Listen scheitern. Verteilung und
+Betreiberzulassung sind bisher Verwaltungsaufgaben, keine offene Sybil-Abwehr.
 Die folgenden Abschnitte beschreiben den Austausch der IDs und beide Rollen.
 Fuer Updates: beide Dienste stoppen, den gewuenschten Quellstand herunterladen
 und `bash setup.sh --replace-binaries` ausfuehren. Private Daten ausserhalb des

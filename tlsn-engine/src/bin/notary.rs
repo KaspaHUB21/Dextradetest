@@ -7,7 +7,7 @@ use tlsn::{
     connection::{ConnectionInfo, TranscriptLength},
     transcript::ContentType, verifier::VerifierOutput, webpki::RootCertStore, Session,
 };
-use kucoin_tlsn::{SERVER_DOMAIN, frame_read, frame_write};
+use kucoin_tlsn::{frame_read, frame_write};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -39,8 +39,22 @@ async fn main() -> Result<()> {
             tokio::spawn(async move {
                 let _permit = permit;
                 let result = tokio::time::timeout(std::time::Duration::from_secs(300), async {
-                    let mut api = tokio::net::TcpStream::connect((SERVER_DOMAIN, 443)).await?;
-                    tokio::io::copy_bidirectional(&mut client, &mut api).await?;
+                    use tokio::io::AsyncReadExt;
+                    let mut first = [0u8; 1];
+                    anyhow::ensure!(client.peek(&mut first).await? == 1, "Empty API proxy connection");
+                    let server = if first[0] == 0x16 {
+                        kucoin_tlsn::SERVER_DOMAIN.to_string()
+                    } else {
+                    anyhow::ensure!(first[0] == 0, "Unsupported proxy protocol");
+                    let len = client.read_u16().await? as usize;
+                    anyhow::ensure!(len > 0 && len <= 253, "Invalid API target frame");
+                    let mut name = vec![0; len]; client.read_exact(&mut name).await?;
+                    std::str::from_utf8(&name)?.to_owned()
+                    };
+                    let mut addresses = kucoin_tlsn::resolve_api(&server).await?;
+                    addresses.sort_by_key(|address| if address.is_ipv4() { 0 } else { 1 });
+                    let mut api = tokio::net::TcpStream::connect(addresses.as_slice()).await?;
+                    kucoin_tlsn::bounded_api_proxy(&mut client, &mut api).await?;
                     Ok::<(), anyhow::Error>(())
                 }).await;
                 if !matches!(result, Ok(Ok(()))) { eprintln!("API forwarding failed: {result:?}"); }
@@ -49,7 +63,7 @@ async fn main() -> Result<()> {
         #[allow(unreachable_code)] Ok::<(), anyhow::Error>(())
     });
     let _proxy_guard = kucoin_tlsn::AbortOnDrop::new(&proxy_task);
-    println!("Local MPC notary and KuCoin-only TCP forwarding service ready.");
+    println!("Local MPC notary and public HTTPS443 forwarding service ready (proxy framing v2).");
     loop {
         let (mut ctl, _) = control.accept().await?;
         let session = async {

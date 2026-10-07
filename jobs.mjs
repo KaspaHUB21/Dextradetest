@@ -3,6 +3,34 @@ import { readSync, statSync, fstatSync, fsyncSync, openSync, closeSync, writeFil
 import { dirname } from 'node:path';
 
 export const API = Object.freeze({ server: 'api.kucoin.com', path: '/api/v1/market/orderbook/level1?symbol=KAS-USDT', method: 'GET', symbol: 'KAS-USDT' });
+export function validateApi(api) {
+  const keys = ['server', 'path', 'method', 'extract'];
+  if (!api || typeof api !== 'object' || Array.isArray(api) || Object.keys(api).length !== keys.length || Object.keys(api).some(k => !keys.includes(k))) throw new Error('Invalid API schema');
+  if (typeof api.server !== 'string' || api.server.length > 253 || api.server !== api.server.toLowerCase() || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(api.server) || /\.(?:localhost|local|internal|test|invalid|example|onion)$/.test(api.server)) throw new Error('API must use a public DNS hostname');
+  if (api.method !== 'GET' || typeof api.path !== 'string' || api.path.length > 1024 || !/^\/[\x21-\x7e]*$/.test(api.path) || api.path.startsWith('//') || /[#\\]/.test(api.path) || /%(?![a-fA-F0-9]{2})/.test(api.path)) throw new Error('API supports bounded GET paths only');
+  if (!Array.isArray(api.extract) || api.extract.length < 1 || api.extract.length > 16) throw new Error('API needs one to sixteen extraction fields');
+  const names = new Set();
+  const extract = api.extract.map(field => {
+    if (!field || Object.keys(field).length !== 3 || Object.keys(field).some(k => !['name','pointer','type'].includes(k)) || typeof field.name !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,47}$/.test(field.name) || ['constructor','prototype','__proto__'].includes(field.name) || names.has(field.name) || typeof field.pointer !== 'string' || field.pointer.length > 256 || !/^(?:\/(?:[^~\x00-\x1f]|~[01])*)*$/.test(field.pointer) || !['string','number','boolean','decimal'].includes(field.type)) throw new Error('Invalid JSON extraction field');
+    names.add(field.name); return { name: field.name, pointer: field.pointer, type: field.type };
+  });
+  return { server: api.server, path: api.path, method: 'GET', extract };
+}
+export function extractValues(response, api) {
+  const values = Object.create(null);
+  for (const field of validateApi(api).extract) {
+    let value = response;
+    for (const segment of field.pointer === '' ? [] : field.pointer.slice(1).split('/').map(v => v.replace(/~1/g, '/').replace(/~0/g, '~'))) {
+      if (value === null || typeof value !== 'object' || !Object.hasOwn(value, segment)) throw new Error('Missing authenticated JSON field: ' + field.name);
+      value = value[segment];
+    }
+    const valid = field.type === 'decimal' ? typeof value === 'string' && /^-?\d{1,20}(\.\d{1,20})?$/.test(value) : typeof value === field.type && (field.type !== 'number' || (Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value)))) && (field.type !== 'string' || value.length <= 4096);
+    if (!valid) throw new Error('Unexpected authenticated JSON field type: ' + field.name);
+    values[field.name] = value;
+  }
+  return values;
+}
+export const apiEnvironment = job => ({ API_SERVER: validateJob(job).api.server, API_PATH: validateJob(job).api.path, API_GENERIC: job.version === 2 ? '1' : '0' });
 export const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 export function boundedRead(path, limit = 8 * 1024 * 1024) {
   const fd = openSync(path, 'r');
@@ -27,13 +55,17 @@ export function jsonRead(path, limit = 128 * 1024) {
 export function validateJob(job) {
   const keys = ['version', 'id', 'execution', 'challenge', 'notBefore', 'notAfter', 'api'];
   if (!job || typeof job !== 'object' || Array.isArray(job) || Object.keys(job).length !== keys.length || Object.keys(job).some(k => !keys.includes(k))) throw new Error('Invalid job schema');
-  if (job.version !== 1 || typeof job.id !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(job.id) || !Number.isSafeInteger(job.execution) || job.execution < 0 || typeof job.challenge !== 'string' || !/^[a-f0-9]{64}$/.test(job.challenge)) throw new Error('Invalid job identity or challenge');
+  if (![1, 2].includes(job.version) || typeof job.id !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(job.id) || !Number.isSafeInteger(job.execution) || job.execution < 0 || typeof job.challenge !== 'string' || !/^[a-f0-9]{64}$/.test(job.challenge)) throw new Error('Invalid job identity or challenge');
   if (!Number.isSafeInteger(job.notBefore) || !Number.isSafeInteger(job.notAfter) || job.notBefore < 0 || job.notAfter <= job.notBefore || job.notAfter - job.notBefore > 600000) throw new Error('Invalid job execution window (maximum ten minutes)');
+  if (job.version === 2) return { version: 2, id: job.id, execution: job.execution, challenge: job.challenge, notBefore: job.notBefore, notAfter: job.notAfter, api: validateApi(job.api) };
   if (!job.api || typeof job.api !== 'object' || Array.isArray(job.api) || Object.keys(job.api).length !== Object.keys(API).length || Object.entries(API).some(([k,v]) => job.api[k] !== v)) throw new Error('Unsupported API specification');
   return { version: 1, id: job.id, execution: job.execution, challenge: job.challenge, notBefore: job.notBefore, notAfter: job.notAfter, api: { ...API } };
 }
 export function makeJob(now = Date.now()) {
   return validateJob({ version: 1, id: 'local-' + randomBytes(12).toString('hex'), execution: 0, challenge: randomBytes(32).toString('hex'), notBefore: now - 2000, notAfter: now + 300000, api: { ...API } });
+}
+export function makeApiJob(api, now = Date.now()) {
+  return validateJob({ ...makeJob(now), version: 2, api: validateApi(api) });
 }
 export const jobHash = job => hash(JSON.stringify(validateJob(job)));
 export function selectWitness(job, seeds) {
@@ -45,7 +77,10 @@ export function selectWitness(job, seeds) {
 export function validateResult(result, job, now = Date.now(), live = false) {
   validateJob(job);
   if (result?.jobChallenge !== jobHash(job)) throw new Error('Authenticated API request does not bind expected job');
-  if (result?.verified !== true || result.server !== API.server || result.path !== API.path || result.symbol !== API.symbol || typeof result.price !== 'string' || !/^\d{1,20}(\.\d{1,20})?$/.test(result.price)) throw new Error('Unexpected authenticated API result');
+  if (job.version === 2) {
+    if (result?.verified !== true || result.server !== job.api.server || result.path !== job.api.path || result.method !== 'GET') throw new Error('Unexpected authenticated API result');
+    extractValues(result.response, job.api);
+  } else if (result?.verified !== true || result.server !== API.server || result.path !== API.path || result.symbol !== API.symbol || typeof result.price !== 'string' || !/^\d{1,20}(\.\d{1,20})?$/.test(result.price)) throw new Error('Unexpected authenticated API result');
   if (!Number.isSafeInteger(result.tlsSessionTimeSeconds)) throw new Error('Missing authenticated session time');
   const time = result.tlsSessionTimeSeconds * 1000;
   // TLSNotary reports whole seconds: test overlap with that one-second interval.

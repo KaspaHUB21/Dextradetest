@@ -1,0 +1,41 @@
+{
+  "date": "2026-10-07",
+  "scope": "Prototype federation; controlled test nodes plus real public APIs and deployed public bootstrap. No independent-operator or absolute-security claim.",
+  "success": true,
+  "checks": {
+    "automaticPublicFreshInstallDiscovery": true,
+    "publicRemoteCoinbaseJobWithoutManualPeerOrCallerPins": true,
+    "publicOfflineVerificationAndReplayRejection": true,
+    "fourNodeRelayJobIncludingThreeMpcChannels": true,
+    "cacheReconnectWithBootstrapOffline": true,
+    "v1KucoinBidirectionalProofRegression": true,
+    "v2KucoinAndCoinbaseOfflineProofs": true,
+    "validlyWorkerSignedFalseValueRejectedAgainstTlsProof": true,
+    "wrongEndpointJobProofIdentityRejected": true,
+    "policyChecksPassed": 15,
+    "peerAttackChecksPassed": 11,
+    "lifecycleChecksPassed": 4,
+    "dnsQueueMeshApiAndReplaySuitesPassed": true,
+    "nativeProxyAndAddressBoundsPassed": true,
+    "insecureCompileFlagRejected": true
+  },
+  "timingsMs": {
+    "localTwoNodeKucoinV2Job": 4179,
+    "localTwoNodeCoinbaseV2Job": 3886,
+    "publicRelayRemoteJobIncludingPolling": 17961
+  },
+  "deployment": {
+    "bootstrap": "kasvio.network:9443",
+    "localAndBootstrapUpdated": true,
+    "identityAndNotaryKeysPreserved": true,
+    "previousSourceAndBinariesBackedUp": true
+  },
+  "remaining": [
+    "Default admission contains one known witness, not a permissionless Sybil-resistant roster",
+    "Operator independence and absence of collusion cannot be inferred from node IDs",
+    "One-hop bounded routing and finite default bootstrap capacity; large-scale load test outstanding",
+    "No normal subsecond job or less-than-one-MB generation traffic achieved",
+    "Only compatible public HTTPS443 GET JSON endpoints and bounded responses",
+    "Old third installations require explicit source/engine update and network-enable"
+  ]
+}

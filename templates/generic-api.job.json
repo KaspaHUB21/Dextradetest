@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "id": "replace-with-unique-job-id",
+  "execution": 0,
+  "challenge": "0000000000000000000000000000000000000000000000000000000000000000",
+  "notBefore": 0,
+  "notAfter": 300000,
+  "api": {
+    "server": "api.coinbase.com",
+    "path": "/v2/prices/BTC-USD/spot",
+    "method": "GET",
+    "extract": [{ "name": "price", "pointer": "/data/amount", "type": "decimal" }]
+  }
+}

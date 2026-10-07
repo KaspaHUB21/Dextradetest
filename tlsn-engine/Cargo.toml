@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tlsn_insecure)'] }
+
 [dependencies]
 tlsn = { path = "../vendor/tlsn/crates/tlsn", features = ["mozilla-certs"] }
 tlsn-formats = { path = "../vendor/tlsn/crates/formats" }

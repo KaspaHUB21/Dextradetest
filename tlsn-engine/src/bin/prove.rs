@@ -15,7 +15,7 @@ use tlsn::{
     transcript::TranscriptCommitConfig, webpki::RootCertStore, Session,
 };
 use kucoin_tlsn as tlsn_examples;
-use kucoin_tlsn::{ExampleType, SERVER_DOMAIN, frame_read, frame_write};
+use kucoin_tlsn::{ExampleType, frame_read, frame_write};
 use tlsn_formats::http::HttpTranscript;
 
 const USER_AGENT: &str = "orakel-tlsnotary-test/0.1";
@@ -41,7 +41,9 @@ async fn run() -> Result<()> {
     let challenge = env::var("JOB_CHALLENGE").ok();
     if let Some(value) = &challenge { kucoin_tlsn::validate_job_challenge(value)?; }
     let headers = challenge.as_deref().map(|value| vec![("X-Oracle-Job-Challenge", value)]).unwrap_or_default();
-    prover(socket, req_tx, resp_rx, kucoin_tlsn::API_PATH, headers, &ExampleType::Json).await?;
+    let (server, path) = kucoin_tlsn::api_target()?;
+    kucoin_tlsn::resolve_api(&server).await?;
+    prover(socket, req_tx, resp_rx, &server, &path, headers, &ExampleType::Json).await?;
     bridge.await??;
     Ok(())
 }
@@ -49,6 +51,7 @@ async fn prover<S: AsyncWrite + AsyncRead + Send + Sync + Unpin + 'static>(
     socket: S,
     req_tx: Sender<AttestationRequest>,
     resp_rx: Receiver<Attestation>,
+    server: &str,
     uri: &str,
     extra_headers: Vec<(&str, &str)>,
     example_type: &ExampleType,
@@ -82,13 +85,19 @@ async fn prover<S: AsyncWrite + AsyncRead + Send + Sync + Unpin + 'static>(
         .await?;
 
     // Open a TCP connection to the server.
-    let client_socket = tokio::net::TcpStream::connect(env::var("PROXY_ADDR").unwrap_or("127.0.0.1:7049".into())).await?;
+    let mut client_socket = tokio::net::TcpStream::connect(env::var("PROXY_ADDR").unwrap_or("127.0.0.1:7049".into())).await?;
 
+    // Version 2 proxy framing precedes the end-to-end TLS stream.
+    use tokio::io::AsyncWriteExt;
+    if env::var("API_GENERIC").as_deref() == Ok("1") {
+        client_socket.write_u16(server.len() as u16).await?;
+        client_socket.write_all(server.as_bytes()).await?;
+    }
     // Bind the prover to the server connection.
     let (tls_connection, prover_fut) = prover
         .connect(
             TlsClientConfig::builder()
-                .server_name(ServerName::Dns(SERVER_DOMAIN.try_into()?))
+                .server_name(ServerName::Dns(server.try_into()?))
                 .root_store(RootCertStore::mozilla())
                 .build()?,
             client_socket.compat(),
@@ -111,7 +120,7 @@ async fn prover<S: AsyncWrite + AsyncRead + Send + Sync + Unpin + 'static>(
     // Build a simple HTTP request with common headers.
     let request_builder = Request::builder()
         .uri(uri)
-        .header("Host", SERVER_DOMAIN)
+        .header("Host", server)
         .header("Accept", "*/*")
         // Using "identity" instructs the Server not to use compression for its HTTP response.
         // TLSNotary tooling does not support compression.
@@ -180,7 +189,7 @@ async fn prover<S: AsyncWrite + AsyncRead + Send + Sync + Unpin + 'static>(
 
     let request_config = builder.build()?;
 
-    let (attestation, secrets) = notarize(prover, &request_config, req_tx, resp_rx).await?;
+    let (attestation, secrets) = notarize(prover, &request_config, req_tx, resp_rx, server).await?;
 
     // Close the session and wait for the driver to complete.
     handle.close();
@@ -209,6 +218,7 @@ async fn notarize(
     config: &RequestConfig,
     request_tx: Sender<AttestationRequest>,
     attestation_rx: Receiver<Attestation>,
+    server: &str,
 ) -> Result<(Attestation, Secrets)> {
     let mut builder = ProveConfig::builder(prover.transcript());
 
@@ -232,7 +242,7 @@ async fn notarize(
     let mut builder = AttestationRequest::builder(config);
 
     builder
-        .server_name(ServerName::Dns(SERVER_DOMAIN.try_into().unwrap()))
+        .server_name(ServerName::Dns(server.try_into().unwrap()))
         .handshake_data(HandshakeData {
             certs: tls_transcript
                 .server_cert_chain()

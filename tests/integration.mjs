@@ -10,6 +10,8 @@ const exec = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(ROOT, 'oracle-node.mjs');
 const ENGINE = resolve(process.env.ORACLE_ENGINE_DIR || join(ROOT, 'bin'));
+const portOffset = Number(process.env.ORACLE_TEST_PORT_OFFSET || 0);
+assert.ok(Number.isInteger(portOffset) && portOffset >= 0 && portOffset <= 30000, 'Invalid test port offset');
 const discovery = process.env.ORACLE_TEST_DISCOVERY || 'closed';
 assert.ok(['closed', 'local-test'].includes(discovery), 'Integration requires closed or loopback local-test discovery');
 mkdirSync(join(ROOT, 'tests/results'), { recursive: true });
@@ -49,8 +51,8 @@ async function waitForPeer(data, id) {
 }
 const report = { testStartedAt: new Date().toISOString(), discovery, checks: [], results: [] };
 try {
-  const a = JSON.parse(await cli('init', '--data', A, '--address', '127.0.0.1:19443', '--notary-port', '19047', '--discovery', discovery));
-  const b = JSON.parse(await cli('init', '--data', B, '--address', '127.0.0.1:20443', '--notary-port', '20047', '--discovery', discovery));
+  const a = JSON.parse(await cli('init', '--data', A, '--address', '127.0.0.1:' + (19443 + portOffset), '--notary-port', String(19047 + portOffset), '--discovery', discovery));
+  const b = JSON.parse(await cli('init', '--data', B, '--address', '127.0.0.1:' + (20443 + portOffset), '--notary-port', String(20047 + portOffset), '--discovery', discovery));
   assert.notEqual(a.id, b.id);
   await cli('add-seed', '--data', A, '--address', b.address, '--id', b.id);
   await cli('add-seed', '--data', B, '--address', a.address, '--id', a.id);

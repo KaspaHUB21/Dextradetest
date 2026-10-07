@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "id": "replace-with-unique-job-id",
+  "execution": 0,
+  "challenge": "0000000000000000000000000000000000000000000000000000000000000000",
+  "notBefore": 0,
+  "notAfter": 300000,
+  "api": {
+    "server": "api.kucoin.com",
+    "path": "/api/v1/market/orderbook/level1?symbol=BTC-USDT",
+    "method": "GET",
+    "extract": [
+      { "name": "price", "pointer": "/data/price", "type": "decimal" },
+      { "name": "timestamp", "pointer": "/data/time", "type": "number" }
+    ]
+  }
+}

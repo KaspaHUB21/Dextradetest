@@ -7,12 +7,14 @@ import { fileURLToPath } from 'node:url';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chmodSync, statSync, readdirSync, unlinkSync } from 'node:fs';
-import { boundedRead, jsonRead, makeJob, validateJob, jobHash, validateResult, consume } from './jobs.mjs';
+import { boundedRead, jsonRead, makeJob, makeApiJob, apiEnvironment, extractValues, validateJob, jobHash, validateResult, consume } from './jobs.mjs';
 import { discoveryTarget, isDiscoveryAddressAllowed } from './discovery-address.mjs';
 import { createMeshLink } from './mesh-link.mjs';
 import { createJobQueue, recoverQueueOwner } from './job-queue.mjs';
 import { selectWitnessOnce } from './witness-selection.mjs';
 import { DEFAULT_BOOTSTRAP, initialBootstraps, pinAcceptsAddress } from './network-defaults.mjs';
+import { loadWitnessPolicy, isWitnessAdmitted, publicNotaryCallerAllowed, publicJobCallerAllowed } from './witness-policy.mjs';
+import { networkStatus } from './node-status.mjs';
 const run = promisify(execFile);
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const BIN = process.env.ORACLE_ENGINE_DIR || join(ROOT, 'bin');
@@ -26,6 +28,9 @@ const keyId = key => sha(createPublicKey(key).export({ type: 'spki', format: 'de
 const outbound = new Set();
 let activeDaemon = false;
 const links = new Map();
+// Relay routes carry only identities authenticated over the relay's live mesh.
+// Every relayed connection establishes a separate end-to-end mutual TLS session.
+const relayRoutes = new Map();
 const PROOF_FILES = ['kucoin.presentation.tlsn', 'node-receipt.json', 'peer-descriptor.json', 'job-spec.json'];
 function address(value) {
   const url = new URL('tls://' + value);
@@ -43,6 +48,17 @@ function writeJson(path, object) {
   if (process.platform !== 'win32') { const dir = openSync(dirname(path), 'r'); try { fsyncSync(dir); } finally { closeSync(dir); } }
 }
 function config() { return readJson(join(DATA, 'config.json')); }
+function runtimeConfig() {
+  const cfg = config();
+  return { ...cfg, seeds: loadWitnessPolicy(DATA, cfg).seeds };
+}
+function assertCurrentWitness(peer) {
+  if (!existsSync(join(DATA, 'config.json'))) return; // Explicit offline --peer-id trust.
+  const current = runtimeConfig();
+  if (peer.id === current.id) {
+    if (peer.notaryPublicKey !== validateDescriptor(readJson(join(DATA, 'descriptor.json'))).notaryPublicKey) throw new Error('Local notary key mismatch');
+  } else if (!isWitnessAdmitted(current, peer)) throw new Error('Witness not admitted by current policy');
+}
 function discoveryMode(cfg) {
   const mode = cfg.discovery || 'closed';
   if (!['closed', 'public', 'local-test'].includes(mode)) throw new Error('Invalid discovery mode');
@@ -95,12 +111,15 @@ function line(socket) {
   });
 }
 function authorizeOutbound(peer, request, cfg) {
-  const approved = cfg.seeds.find(seed => seed.id === peer.id && seed.address === peer.address);
+  const approved = isWitnessAdmitted(cfg, peer);
   const identityPins = discoveryPins(cfg).filter(seed => seed.id === peer.id);
   if (identityPins.length && !identityPins.some(pin => pinAcceptsAddress(pin, peer.address))) throw new Error('Discovery cannot redirect pinned peer');
-  const discoveryOnly = !approved && ['hello', 'link'].includes(request.op) && discoveryMode(cfg) !== 'closed';
-  if (!approved && !discoveryOnly) throw new Error('Outbound peer is not explicitly approved');
-  return discoveryOnly;
+  const discoveryOnly = !approved && ['hello', 'link', 'relay', 'relay-deliver'].includes(request.op) && discoveryMode(cfg) !== 'closed';
+  // Worker honesty is not assumed: downloaded results require an independently
+  // admitted witness's proof. This permission grants only job transport.
+  const publicJobTransport = discoveryMode(cfg) === 'public' && ['submit', 'job-status', 'job-result'].includes(request.op);
+  if (!approved && !discoveryOnly && !publicJobTransport) throw new Error('Outbound peer is not explicitly approved');
+  return !approved;
 }
 async function exchange(socket, request) {
   socket.on('error', () => {});
@@ -112,10 +131,11 @@ async function exchange(socket, request) {
   } catch (error) { socket.destroy(); throw error; }
 }
 async function connect(peer, request) {
-  const cfg = config(); authorizeOutbound(peer, request, cfg);
+  const cfg = runtimeConfig(); authorizeOutbound(peer, request, cfg);
   if (activeDaemon) {
     const link = links.get(peer.id);
     if (link && !link.closed) return exchange(link.openStream(), request);
+    if (!peer.address && relayRoutes.has(peer.id)) return relayConnect(peer, request);
     return directConnect(peer, request);
   }
   // The local, identity-pinned broker opens streams through the running daemon.
@@ -137,11 +157,13 @@ async function connect(peer, request) {
   finally { clearTimeout(deadline); }
 }
 async function directConnect(peer, request) {
-  const cfg = config();
+  const cfg = runtimeConfig();
   const discoveryOnly = authorizeOutbound(peer, request, cfg);
   if (!peer.address) throw new Error('Outbound-only peer requires an established mesh link');
   if (outbound.size >= 32) throw new Error('Outbound connection limit');
-  const target = discoveryOnly ? await discoveryTarget(peer.address, discoveryMode(cfg)) : address(peer.address);
+  const mode = discoveryMode(cfg);
+  const addressPinned = cfg.seeds.some(pin => pin.id === peer.id && pin.address !== undefined);
+  const target = mode !== 'closed' ? await discoveryTarget(peer.address, mode) : !addressPinned && cfg.seeds.some(pin => pin.id === peer.id) ? await discoveryTarget(peer.address, 'public') : address(peer.address);
   if (outbound.size >= 32) throw new Error('Outbound connection limit');
   const socket = tls.connect({ ...target, ...credentials(), minVersion: 'TLSv1.3', rejectUnauthorized: false });
   outbound.add(socket); socket.once('close', () => outbound.delete(socket));
@@ -156,6 +178,25 @@ async function directConnect(peer, request) {
     if (peerId(socket) !== peer.id) throw new Error('Peer identity does not match pinned ID');
     return await exchange(socket, request);
   } catch (e) { socket.destroy(); throw e; } finally { clearTimeout(timer); }
+}
+async function relayConnect(peer, request) {
+  authorizeOutbound(peer, request, runtimeConfig());
+  const via = relayRoutes.get(peer.id);
+  const link = via && links.get(via);
+  if (!link || link.closed) throw new Error('Relay route unavailable');
+  const transport = (await exchange(link.openStream(), { op: 'relay', targetId: peer.id })).socket;
+  const socket = tls.connect({ socket: transport, ...credentials(), minVersion: 'TLSv1.3', rejectUnauthorized: false });
+  socket.on('error', () => {});
+  const timer = setTimeout(() => socket.destroy(new Error('Relayed TLS handshake timeout')), 10000);
+  try {
+    await new Promise((ok, no) => {
+      socket.once('secureConnect', ok); socket.once('error', no);
+      socket.once('close', () => no(new Error('Relayed TLS connection closed')));
+    });
+    if (peerId(socket) !== peer.id) throw new Error('End-to-end relay identity mismatch');
+    return await exchange(socket, request);
+  } catch (error) { socket.destroy(); transport.destroy(); throw error; }
+  finally { clearTimeout(timer); }
 }
 async function request(peer, body) {
   const { socket, response } = await connect(peer, body);
@@ -187,10 +228,10 @@ async function init() {
   const id = keyId(privatePem);
   await run(join(BIN, 'notary'), ['init'], { cwd: DATA });
   chmodSync(join(DATA, 'notary.key'), 0o600);
-  const descriptor = { version: 1, id, address: advertised, ...(outboundOnly ? { outboundOnly: true } : {}), publicKey, notaryPublicKey: readFileSync(join(DATA, 'notary.pub'), 'utf8').trim() };
+  const descriptor = { version: 1, id, address: advertised, ...(outboundOnly ? { outboundOnly: true } : {}), apiJobs: [1, 2], publicKey, notaryPublicKey: readFileSync(join(DATA, 'notary.pub'), 'utf8').trim() };
   const bytes = Buffer.from(JSON.stringify(descriptor));
   writeJson(join(DATA, 'descriptor.json'), { payload: bytes.toString('base64'), signature: sign(null, Buffer.concat([DOMAIN, bytes]), createPrivateKey(privatePem)).toString('base64') });
-  writeJson(join(DATA, 'config.json'), { version: 1, id, listen, address: advertised, outboundOnly, notaryPort: base, seeds: [], bootstraps: initialBootstraps(discovery, id), discovery });
+  writeJson(join(DATA, 'config.json'), { version: 1, id, listen, address: advertised, outboundOnly, notaryPort: base, seeds: [], bootstraps: initialBootstraps(discovery, id), discovery, witnessTrust: discovery === 'public' ? 'bundled' : 'pinned', publicNotary: discovery === 'public', publicJobs: discovery === 'public' });
   console.log(JSON.stringify({ id, address: advertised, data: DATA }));
 }
 function addSeed() {
@@ -279,7 +320,7 @@ async function renewCertificate() {
   } finally { if (existsSync(temp)) unlinkSync(temp); }
 }
 async function start() {
-  const cfg = config();
+  const cfg = runtimeConfig();
   activeDaemon = true;
   const mode = discoveryMode(cfg);
   checkLocalIdentity(cfg);
@@ -292,6 +333,7 @@ async function start() {
   const pins = new Map(discoveryPins(cfg).map(p => [p.id, p]));
   const peers = new Map(); const incoming = new Set(); const meshStreams = new Set(); const localSockets = new Set(); const ipCounts = new Map();
   const retries = new Map();
+  const relaying = new Map();
   const rates = new Map(); let lease; let child; let stopping = false; let releaseTask;
   let launching = false; let restartTimer; let restartAttempts = 0; let server; let timer; let broker;
   let ready;
@@ -324,6 +366,8 @@ async function start() {
       if (clients.has(desc.id) && !desc.outboundOnly) return false;
       if (!desc.outboundOnly) await discoveryTarget(desc.address, mode);
     }
+    if (approved.has(desc.id) && mode !== 'closed' && !desc.outboundOnly) await discoveryTarget(desc.address, mode);
+    if (approved.has(desc.id) && mode === 'closed' && approved.get(desc.id).address === undefined && !desc.outboundOnly) await discoveryTarget(desc.address, 'public');
     const previous = peers.get(desc.id);
     if (previous && previous.address !== desc.address) return false;
     if (!previous && !pin && [...peers.values()].filter(p => !pins.has(p.id)).length >= 32) return false;
@@ -333,9 +377,21 @@ async function start() {
       if (!evict) return false;
       peers.delete(evict.id); retries.delete(evict.id);
     }
-    peers.set(desc.id, { descriptor: envelope, ...desc, dialable: !desc.outboundOnly, trusted: approved.has(desc.id), learnedAt: previous?.learnedAt || Date.now(), lastSeen: online ? Date.now() : (previous?.lastSeen || 0), confirmed: online || Boolean(previous?.confirmed), mesh: Boolean(links.get(desc.id) && !links.get(desc.id).closed) });
+    const relayVia = relayRoutes.get(desc.id);
+    peers.set(desc.id, { descriptor: envelope, ...desc, dialable: !desc.outboundOnly, trusted: approved.has(desc.id), learnedAt: previous?.learnedAt || Date.now(), lastSeen: online ? Date.now() : (previous?.lastSeen || 0), confirmed: online || Boolean(previous?.confirmed), mesh: Boolean(links.get(desc.id) && !links.get(desc.id).closed), ...(relayVia && links.get(relayVia) && !links.get(relayVia).closed ? { relayVia } : {}) });
     writeJson(join(DATA, 'peers.json'), [...peers.values()]);
     return true;
+  }
+  // Retain a bounded signed peer cache across restarts. Cached entries are not
+  // marked online/trusted until a fresh authenticated connection succeeds.
+  if (mode !== 'closed' && existsSync(join(DATA, 'peers.json'))) {
+    let cached;
+    try { cached = JSON.parse(boundedRead(join(DATA, 'peers.json'), 1024 * 1024)); } catch { cached = []; }
+    const cacheStarted = Date.now();
+    if (Array.isArray(cached)) for (const entry of cached.slice(0, 32)) {
+      if (Date.now() - cacheStarted >= 8000) break;
+      try { if (entry.descriptor && !validateDescriptor(entry.descriptor).outboundOnly) await remember(entry.descriptor); } catch {}
+    }
   }
   function invalidateLease() {
     const previous = lease; lease = undefined;
@@ -419,7 +475,7 @@ async function start() {
   }
   function publicStatus(value) {
     const { result, ...status } = value;
-    if (result) status.result = { verified: result.verified, nodeId: result.nodeId, peerId: result.peerId, price: result.price };
+    if (result) status.result = { verified: result.verified, nodeId: result.nodeId, peerId: result.peerId, ...(result.values ? { values: result.values } : { price: result.price }) };
     return status;
   }
   function handlePeer(socket) {
@@ -431,7 +487,7 @@ async function start() {
     socket.setTimeout(15000, () => socket.destroy());
     (async () => {
       const id = peerId(socket);
-      if (mode === 'local-test' && !isDiscoveryAddressAllowed(socket.remoteAddress, 'local-test')) throw new Error('Local-test accepts loopback connections only');
+      if (mode === 'local-test' && !socket.oracleRelayed && !isDiscoveryAddressAllowed(socket.remoteAddress, 'local-test')) throw new Error('Local-test accepts loopback connections only');
       // Closed mode preserves admission before parsing; open mode admits discovery only.
       if (!approved.has(id) && !clients.has(id) && mode === 'closed') throw new Error('Peer identity not approved');
       if (!rate('peer:' + id, 90, 60000)) throw new Error('Peer request rate exceeded');
@@ -439,17 +495,54 @@ async function start() {
       if (!msg || typeof msg !== 'object' || Array.isArray(msg)) throw new Error('Invalid peer request');
       const desc = validateDescriptor(msg.descriptor);
       if (desc.id !== id || (pins.has(id) && !pinAcceptsAddress(pins.get(id), desc.address))) throw new Error('Descriptor does not match pinned peer');
-      if (!approved.has(id) && !clients.has(id) && !['hello', 'link'].includes(msg.op)) throw new Error('Peer identity not approved for jobs or notary sessions');
+      const current = runtimeConfig(); // Recheck live policy expiry and revocation.
+      const admitted = isWitnessAdmitted(current, desc);
+      if (!admitted && !clients.has(id) && !['hello', 'link', 'relay', 'relay-deliver'].includes(msg.op) && !publicNotaryCallerAllowed(current, msg.op) && !publicJobCallerAllowed(current, msg.op)) throw new Error('Peer identity not approved for jobs or notary sessions');
       // Inbound TLS proves possession of a key, not reachability of its advertised address.
       if (!await remember(msg.descriptor, approved.has(id) || desc.outboundOnly === true)) throw new Error('Peer discovery admission rejected');
       if (msg.op === 'hello' || msg.op === 'link') {
         const shared = [...peers.values()].filter(p => p.dialable && p.confirmed && Date.now() - p.lastSeen < 30000 && p.id !== id);
         const offset = shared.length ? randomInt(shared.length) : 0;
         if (msg.op === 'link' && links.get(id) && !links.get(id).closed) throw new Error('Peer already linked');
-        send(socket, { ok: true, descriptor: readJson(join(DATA, 'descriptor.json')), notaryReady: Boolean(child && !lease && !releaseTask && !launching), peers: [...shared.slice(offset), ...shared.slice(0, offset)].slice(0, 32).map(p => p.descriptor) });
+        const relayCandidates = [...peers.values()].filter(p => p.outboundOnly && p.id !== id && links.get(p.id) && !links.get(p.id).closed);
+        const relayOffset = relayCandidates.length ? randomInt(relayCandidates.length) : 0;
+        const relayedPeers = [...relayCandidates.slice(relayOffset), ...relayCandidates.slice(0, relayOffset)].slice(0, 8).map(p => p.descriptor);
+        send(socket, { ok: true, descriptor: readJson(join(DATA, 'descriptor.json')), notaryReady: Boolean(child && !lease && !releaseTask && !launching), peers: [...shared.slice(offset), ...shared.slice(0, offset)].slice(0, 32).map(p => p.descriptor), relayedPeers });
         if (msg.op === 'link') attachLink(id, socket, false); else socket.end(); return;
       }
+      if (msg.op === 'relay-deliver') {
+        // Only a live mesh neighbor may deliver an opaque tunnel. Its assertion
+        // grants no identity: the inner TLS certificate is checked by handlePeer.
+        if (!socket.socket || !links.get(id) || links.get(id).closed) throw new Error('Relay delivery requires live mesh');
+        send(socket, { ok: true });
+        const inner = new tls.TLSSocket(socket, { isServer: true, secureContext: tls.createSecureContext(credentials()), requestCert: true, rejectUnauthorized: false, minVersion: 'TLSv1.3' });
+        inner.oracleRelayed = true;
+        inner.on('error', () => {});
+        const deadline = setTimeout(() => inner.destroy(), 10000);
+        inner.once('secure', () => { clearTimeout(deadline); if (inner.getProtocol() !== 'TLSv1.3') inner.destroy(); else handlePeer(inner); });
+        inner.once('close', () => clearTimeout(deadline));
+        socket.resume(); return;
+      }
+      if (msg.op === 'relay') {
+        if (!socket.socket || !/^[a-f0-9]{64}$/.test(msg.targetId) || msg.targetId === id || msg.targetId === cfg.id) throw new Error('Invalid relay target');
+        const destination = links.get(msg.targetId);
+        const active = [...relaying.values()].reduce((a, b) => a + b, 0);
+        if (!destination || destination.closed || active >= 8 || (relaying.get(id) || 0) >= 4 || !rate('relay:global', 60, 60000) || !rate('relay:' + id, 30, 60000)) throw new Error('Relay unavailable or rate limited');
+        relaying.set(id, (relaying.get(id) || 0) + 1);
+        let tunnel;
+        const deadline = setTimeout(() => { socket.destroy(); tunnel?.destroy(); }, 310000);
+        let cleaned = false;
+        const cleanup = () => { if (cleaned) return; cleaned = true; clearTimeout(deadline); const remaining = (relaying.get(id) || 1) - 1; remaining ? relaying.set(id, remaining) : relaying.delete(id); socket.destroy(); tunnel?.destroy(); };
+        socket.once('close', cleanup);
+        try {
+          tunnel = (await exchange(destination.openStream(), { op: 'relay-deliver' })).socket;
+          tunnel.once('close', cleanup); send(socket, { ok: true });
+          socket.pipe(tunnel); tunnel.pipe(socket); socket.resume(); tunnel.resume();
+        } catch (error) { cleanup(); throw error; }
+        return;
+      }
       if (msg.op === 'submit' || msg.op === 'submit-series') {
+        if (!admitted && !clients.has(id) && (msg.op !== 'submit' || !rate('public-submit:global', 4, 60000) || !rate('public-submit:' + id, 2, 60000))) throw new Error('Public job admission limit exceeded');
         if (!rate('submit:' + id, 12, 60000)) throw new Error('Job submission rate exceeded');
         if (msg.op === 'submit-series') {
           const jobs = await queue.submitBatch({ specs: msg.specs, requesterId: id });
@@ -470,6 +563,7 @@ async function start() {
       }
       if (msg.op === 'reserve') {
         if (lease || releaseTask || launching || !child || child.exitCode !== null) throw new Error('Notary busy or unavailable');
+        if (!admitted && !clients.has(id) && !rate('public-reserve:global', 6, 60000)) throw new Error('Public notary admission limit exceeded');
         if (!rate('reserve:' + id, 6, 60000)) throw new Error('Reservation rate exceeded');
         lease = { owner: id, token: randomBytes(32).toString('hex'), started: Date.now(), sockets: new Set(), channels: new Set() };
         send(socket, { ok: true, token: lease.token }); socket.end(); return;
@@ -542,12 +636,13 @@ async function start() {
     if (probing || stopping) return; probing = true;
     try {
       const began = Date.now(); let pruned = false;
-      for (const p of peers.values()) if (!pins.has(p.id) && Date.now() - (p.lastSeen || p.learnedAt) > 120000) { links.get(p.id)?.close(); peers.delete(p.id); retries.delete(p.id); pruned = true; }
+      for (const [id, via] of relayRoutes) if (!links.get(via) || links.get(via).closed) { relayRoutes.delete(id); const peer = peers.get(id); if (peer?.relayVia) { delete peer.relayVia; pruned = true; } }
+      for (const p of peers.values()) if (!pins.has(p.id) && Date.now() - (p.lastSeen || p.learnedAt) > 120000) { links.get(p.id)?.close(); peers.delete(p.id); retries.delete(p.id); relayRoutes.delete(p.id); pruned = true; }
       if (pruned) writeJson(join(DATA, 'peers.json'), [...peers.values()]);
       const candidates = new Map(cfg.seeds.filter(p => p.address || links.has(p.id)).map(p => [p.id, p]));
       if (mode !== 'closed') {
         for (const p of (cfg.bootstraps || [])) candidates.set(p.id, p);
-        for (const p of peers.values()) if (p.dialable && !candidates.has(p.id)) candidates.set(p.id, p);
+        for (const p of peers.values()) if ((p.dialable || relayRoutes.has(p.id)) && !candidates.has(p.id)) candidates.set(p.id, p);
       }
       const discovered = [...candidates.values()].filter(p => !pins.has(p.id));
       const offset = discovered.length ? randomInt(discovered.length) : 0;
@@ -561,6 +656,9 @@ async function start() {
         if (stopping) return;
         const retry = retries.get(peer.id);
         if (retry && Date.now() < retry.after) return;
+        // Relayed probes consume finite shared transport slots; reserve room for
+        // actual jobs while keeping successful observations inside freshness.
+        if (relayRoutes.has(peer.id) && peer.lastSeen && Date.now() - peer.lastSeen < 15000) return;
         try {
           if (!links.get(peer.id) && peer.address) {
             // Stable initiator ordering avoids both public peers racing to open duplicate links.
@@ -585,7 +683,17 @@ async function start() {
               try { if (!validateDescriptor(discovered).outboundOnly) await remember(discovered); } catch {}
             }
           }
-        } catch {
+          if (mode !== 'closed' && Array.isArray(response.relayedPeers) && links.get(peer.id) && !links.get(peer.id).closed) {
+            for (const envelope of response.relayedPeers.slice(0, 8)) {
+              try {
+                const relayed = validateDescriptor(envelope);
+                if (relayed.outboundOnly && await remember(envelope)) relayRoutes.set(relayed.id, peer.id);
+              } catch { /* Unverified route advertisements are never used. */ }
+            }
+          }
+        } catch (error) {
+          const failedPeer = peers.get(peer.id);
+          if (failedPeer) { failedPeer.lastError = String(error.message).slice(0, 160); writeJson(join(DATA, 'peers.json'), [...peers.values()]); }
           const failures = Math.min(6, (retry?.failures || 0) + 1);
           retries.set(peer.id, { failures, after: Date.now() + Math.min(60000, 1000 * 2 ** failures) });
           if (retries.size > 72) retries.delete(retries.keys().next().value);
@@ -609,7 +717,7 @@ async function start() {
 }
 
 async function fetchApi() {
-  const cfg = config();
+  const cfg = runtimeConfig();
   checkLocalIdentity(cfg);
   const jobsDir = join(DATA, 'jobs');
   if (existsSync(jobsDir) && readdirSync(jobsDir).length >= 1000) throw new Error('Job storage limit reached; archive completed jobs before fetching');
@@ -617,7 +725,7 @@ async function fetchApi() {
   const spec = specPath ? validateJob(jsonRead(resolve(specPath))) : makeJob();
   if (Date.now() < spec.notBefore || Date.now() > spec.notAfter) throw new Error('Job is stale or not yet executable');
   const peers = existsSync(join(DATA, 'peers.json')) ? readJson(join(DATA, 'peers.json')) : [];
-  const eligible = peers.filter(p => cfg.seeds.some(seed => seed.id === p.id && seed.address === p.address) && Date.now() - p.lastSeen < 30000 && p.notaryReady !== false && (p.dialable || p.mesh));
+  const eligible = peers.filter(p => isWitnessAdmitted(cfg, p) && p.id !== cfg.id && p.confirmed && Date.now() - p.lastSeen < 30000 && p.notaryReady !== false && (p.dialable || p.mesh || p.relayVia) && (spec.version === 1 || p.apiJobs?.includes(2)));
   const selection = selectWitnessOnce({ data: DATA, spec, candidates: eligible });
   const candidates = eligible.filter(p => p.id === selection.id);
   if (!candidates.length) throw new Error('No reachable, explicitly trusted peer; start node and configure seed');
@@ -637,7 +745,7 @@ async function fetchApi() {
   writeJson(join(job, 'peer-descriptor.json'), hello.descriptor);
   const { token } = await request(peer, { op: 'reserve' });
   try {
-    const env = { ...process.env, JOB_CHALLENGE: jobHash(spec), OUTPUT_DIR: job, TRUSTED_NOTARY_KEY: trustFile, PRESENTATION_FILE: join(job, 'kucoin.presentation.tlsn') };
+    const env = { ...process.env, ...apiEnvironment(spec), JOB_CHALLENGE: jobHash(spec), OUTPUT_DIR: job, TRUSTED_NOTARY_KEY: trustFile, PRESENTATION_FILE: join(job, 'kucoin.presentation.tlsn') };
     for (const channel of ['control', 'mpc', 'proxy']) {
       const localServer = net.createServer(local => {
         sockets.add(local); local.pause(); local.on('error', () => {});
@@ -662,10 +770,12 @@ async function fetchApi() {
     const transcript = validateResult(result, spec, Date.now(), true);
     if (result.jobChallenge !== jobHash(spec)) throw new Error('Authenticated API request does not bind expected job');
     const proof = boundedRead(join(job, 'kucoin.presentation.tlsn'));
-    const receipt = { version: 2, nodeId: cfg.id, peerId: peer.id, notaryPublicKey: peer.notaryPublicKey, job: spec, jobSha256: jobHash(spec), ...transcript, presentationSha256: sha(proof), price: result.price, completedAt: new Date().toISOString() };
+    if (!isWitnessAdmitted(runtimeConfig(), peer)) throw new Error('Witness admission changed during job');
+    const output = spec.version === 2 ? { values: extractValues(result.response, spec.api) } : { price: result.price };
+    const receipt = { version: 2, nodeId: cfg.id, peerId: peer.id, notaryPublicKey: peer.notaryPublicKey, job: spec, jobSha256: jobHash(spec), ...transcript, presentationSha256: sha(proof), ...output, completedAt: new Date().toISOString() };
     const payload = Buffer.from(JSON.stringify(receipt));
     writeJson(join(job, 'node-receipt.json'), { payload: payload.toString('base64'), signature: sign(null, Buffer.concat([Buffer.from('oracle-node-prototype/receipt/v1\0'), payload]), createPrivateKey(credentials().key)).toString('base64'), descriptor: readJson(join(DATA, 'descriptor.json')) });
-    console.log(JSON.stringify({ verified: true, nodeId: cfg.id, peerId: peer.id, price: result.price, job }));
+    console.log(JSON.stringify({ verified: true, nodeId: cfg.id, peerId: peer.id, ...output, job }));
   } finally {
     for (const socket of sockets) socket.destroy(); for (const server of tunnels) server.close();
     await request(peer, { op: 'release', token }).catch(() => {});
@@ -689,24 +799,69 @@ async function verifyJob() {
   const expected = expectedPath ? validateJob(jsonRead(resolve(expectedPath))) : spec;
   if (jobHash(expected) !== receipt.jobSha256) throw new Error('Receipt does not match independently expected job');
   const peer = validateDescriptor(jsonRead(join(job, 'peer-descriptor.json')));
+  if (peer.id === nodeId) throw new Error('Worker cannot witness its own execution');
   if (peer.id !== expectedPeer || receipt.nodeId !== nodeId || receipt.peerId !== peer.id || receipt.notaryPublicKey !== peer.notaryPublicKey) throw new Error('Unexpected peer or notary');
   if (receipt.presentationSha256 !== sha(boundedRead(join(job, 'kucoin.presentation.tlsn')))) throw new Error('Presentation changed since node signed it');
   // Derive the TLSNotary key from the separately pinned peer identity, not an arbitrary PEM in the job.
   const trust = join(job, 'verify-trusted-notary.pub'); writeFileSync(trust, peer.notaryPublicKey + '\n');
-  await run(join(BIN, 'verify'), [], { env: { ...process.env, JOB_CHALLENGE: jobHash(expected), OUTPUT_DIR: job, TRUSTED_NOTARY_KEY: trust, PRESENTATION_FILE: join(job, 'kucoin.presentation.tlsn') }, timeout: 30000, maxBuffer: 1024 * 1024 });
+  assertCurrentWitness(peer);
+  await run(join(BIN, 'verify'), [], { env: { ...process.env, ...apiEnvironment(expected), JOB_CHALLENGE: jobHash(expected), OUTPUT_DIR: job, TRUSTED_NOTARY_KEY: trust, PRESENTATION_FILE: join(job, 'kucoin.presentation.tlsn') }, timeout: 30000, maxBuffer: 1024 * 1024 });
   const result = jsonRead(join(job, 'kucoin.verified.json.tlsn'), 512 * 1024);
   const transcript = validateResult(result, expected, Date.now(), Boolean(expectedPath));
   if (result.jobChallenge !== jobHash(expected) || transcript.requestSha256 !== receipt.requestSha256 || transcript.responseSha256 !== receipt.responseSha256) throw new Error('Receipt does not match authenticated job request/response');
-  if (result.price !== receipt.price) throw new Error('Receipt price differs from authenticated API response');
+  const output = spec.version === 2 ? { values: extractValues(result.response, spec.api) } : { price: result.price };
+  if (spec.version === 2 ? JSON.stringify(output.values) !== JSON.stringify(receipt.values) : result.price !== receipt.price) throw new Error('Receipt values differ from authenticated API response');
+  assertCurrentWitness(peer); // Do not publish a result revoked during verification.
   if (expectedPath) consume(resolve(option('state', join(DATA, 'verification-ledger.json'))), expected, receipt.presentationSha256);
-  console.log(JSON.stringify({ verified: true, accepted: Boolean(expectedPath), mode: expectedPath ? 'submission' : 'inspection', nodeId, peerId: peer.id, price: result.price, jobId: spec.id, execution: spec.execution }));
+  console.log(JSON.stringify({ verified: true, accepted: Boolean(expectedPath), mode: expectedPath ? 'submission' : 'inspection', nodeId, peerId: peer.id, ...output, jobId: spec.id, execution: spec.execution }));
 }
 function jobPeer() {
-  const cfg = config(); checkLocalIdentity(cfg);
+  const cfg = runtimeConfig(); checkLocalIdentity(cfg);
   const id = option('peer-id');
   const pin = cfg.seeds.find(p => p.id === id);
-  if (!pin) throw new Error('Job worker must be an explicitly approved peer');
-  return pin;
+  if (pin) return pin;
+  const observed = jsonRead(join(DATA, 'peers.json')).find(peer => peer.id === id && peer.confirmed && Date.now() - peer.lastSeen < 30000);
+  if (cfg.discovery !== 'public' || !observed) throw new Error('Job worker must be a freshly authenticated discovered peer or an explicitly approved peer');
+  return observed;
+}
+async function enableNetwork() {
+  const cfg = config(); checkLocalIdentity(cfg);
+  if (!cfg.outboundOnly) await discoveryTarget(cfg.address, 'public');
+  cfg.discovery = 'public';
+  cfg.witnessTrust = option('witness-trust', 'bundled');
+  if (!['bundled', 'pinned'].includes(cfg.witnessTrust)) throw new Error('Invalid witness trust profile');
+  for (const name of ['public-notary', 'public-jobs']) if (!['true', 'false'].includes(option(name, 'true'))) throw new Error('Public service flags must be true or false');
+  cfg.publicNotary = option('public-notary', 'true') === 'true';
+  cfg.publicJobs = option('public-jobs', 'true') === 'true';
+  cfg.bootstraps = [...(cfg.bootstraps || []).filter(peer => peer.id !== DEFAULT_BOOTSTRAP.id), ...initialBootstraps('public', cfg.id)];
+  loadWitnessPolicy(DATA, cfg); // Validate before committing configuration.
+  const envelope = readJson(join(DATA, 'descriptor.json'));
+  const desc = validateDescriptor(envelope); desc.apiJobs = [1, 2];
+  const payload = Buffer.from(JSON.stringify(desc));
+  writeJson(join(DATA, 'descriptor.json'), { payload: payload.toString('base64'), signature: sign(null, Buffer.concat([DOMAIN, payload]), createPrivateKey(credentials().key)).toString('base64') });
+  writeJson(join(DATA, 'config.json'), cfg);
+  console.log('Public network profile enabled, witness trust: ' + cfg.witnessTrust + '. Restart node after updating native engines.');
+}
+function createJobTemplate() {
+  const template = jsonRead(resolve(option('template')));
+  const spec = makeApiJob(template.api || template);
+  const out = resolve(option('out'));
+  if (existsSync(out)) throw new Error('Job output already exists; do not overwrite an execution');
+  writeJson(out, spec);
+  console.log(JSON.stringify({ job: out, id: spec.id, jobHash: jobHash(spec) }));
+}
+function configurePolicy() {
+  const trust = jsonRead(resolve(option('trust-file')));
+  if (!trust || Object.keys(trust).length !== 2 || !Array.isArray(trust.authorities) || !Number.isSafeInteger(trust.threshold)) throw new Error('Supply local authority PEM keys and threshold');
+  const cfg = config(); cfg.witnessPolicy = trust;
+  // Installing authority trust and its first policy is one explicit operation.
+  const envelope = jsonRead(resolve(option('policy-file')), 256 * 1024);
+  const path = join(DATA, 'witness-policy.json');
+  const previous = existsSync(path) ? readFileSync(path) : null;
+  writeJson(path, envelope);
+  try { loadWitnessPolicy(DATA, cfg); writeJson(join(DATA, 'config.json'), cfg); }
+  catch (error) { previous ? writeFileSync(path, previous, { mode: 0o600 }) : unlinkSync(path); throw error; }
+  console.log('Locally trusted policy authorities and threshold policy installed. Restart to refresh discovery routing; admission/revocation is checked on every job.');
 }
 function submissionPath(queueId) {
   if (!/^[a-f0-9]{64}$/.test(queueId)) throw new Error('Invalid queue identity');
@@ -778,7 +933,7 @@ async function downloadResult(peer, queueId, print = true) {
     writeFileSync(join(job, name), bytes, { mode: 0o600 });
   }
   const receipt = JSON.parse(Buffer.from(jsonRead(join(job, 'node-receipt.json')).payload, 'base64'));
-  const cfg = config();
+  const cfg = runtimeConfig();
   const notary = cfg.seeds.find(p => p.id === receipt.peerId);
   if (!notary && receipt.peerId !== cfg.id) throw new Error('Result witness is not independently approved');
   const witness = validateDescriptor(jsonRead(join(job, 'peer-descriptor.json')));
@@ -799,6 +954,8 @@ async function jobStatus() {
 }
 async function main() {
   const flags = {
+    'network-enable': ['data', 'witness-trust', 'public-notary', 'public-jobs'],
+    'job-create': ['data', 'template', 'out'], 'policy-configure': ['data', 'trust-file', 'policy-file'], status: ['data'],
     init: ['data', 'address', 'listen', 'notary-port', 'discovery', 'outbound-only'], 'add-seed': ['data', 'address', 'id'], 'remove-seed': ['data', 'id'],
     'add-bootstrap': ['data', 'address', 'id'], 'remove-bootstrap': ['data', 'id'], discovery: ['data', 'mode'],
     'allow-client': ['data', 'id'], 'remove-client': ['data', 'id'],
@@ -815,6 +972,10 @@ async function main() {
     }
   }
   if (command === 'init') return init();
+  if (command === 'network-enable') return enableNetwork();
+  if (command === 'job-create') return createJobTemplate();
+  if (command === 'policy-configure') return configurePolicy();
+  if (command === 'status') { const cfg = runtimeConfig(); console.log(JSON.stringify(networkStatus(cfg, existsSync(join(DATA, 'peers.json')) ? readJson(join(DATA, 'peers.json')) : [], cfg.seeds), null, 2)); return; }
   if (command === 'add-seed') return addSeed();
   if (command === 'remove-seed') return removeSeed();
   if (command === 'allow-client') return allowClient();
